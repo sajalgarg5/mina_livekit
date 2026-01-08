@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+<!-- <!DOCTYPE html>
 <html>
 <head>
     <title>Recall.ai Real-time Audio Agent</title>
@@ -35,12 +35,12 @@
             socket.onopen = () => {
                 statusText.textContent = "CONNECTED TO RECALL.AI";
             };
-            console.log("WebSocket connected.");
+            console.warn("WebSocket connected.");
 
             socket.onmessage = async (event) => {
                 try {
                     const msg = JSON.parse(event.data);
-                    console.log("Received message:", msg);
+                    console.warn("Received message:", msg);
                     
                     // Check if this is the correct audio data event
                     if (msg.event === "audio_mixed_raw.data") {
@@ -127,6 +127,144 @@
         // window.onload = tryConnectWhenVisible;
 
         // window.onload = () => { init(); };
+        window.onload = init;
+    </script>
+</body>
+</html> -->
+
+
+
+
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Recall.ai Real-time Audio Agent</title>
+    <style>
+        body { display: flex; flex-direction: column; justify-content: center; align-items: center; height: 100vh; margin: 0; background: linear-gradient(135deg, #0c0cf8 0%, #0b0beb 100%); font-family: 'Segoe UI', sans-serif; overflow: hidden;}
+        .status-indicator { width: 150px; height: 150px; border-radius: 50%; background-color: #82baf7; display: flex; justify-content: center; align-items: center; margin-bottom: 20px; transition: all 0.5s ease; box-shadow: 0 0 20px rgba(0,0,0,0.5); }
+        .status-indicator.speaking { background-color: #00d2ff; box-shadow: 0 0 50px rgba(0, 210, 255, 0.6); animation: pulse 1.5s infinite ease-in-out; }
+        .status-indicator.connected { background-color: #00ff00; }
+        .status-indicator.error { background-color: #ff0000; }
+        @keyframes pulse { 0% { transform: scale(1); } 50% { transform: scale(1.1); } 100% { transform: scale(1); } }
+        .icon { font-size: 60px; color: white; }
+        .status-text { color: white; font-size: 24px; font-weight: 300; margin-bottom: 10px; text-align: center;}
+        .debug-log { color: #82baf7; font-size: 11px; max-width: 80%; height: 100px; overflow-y: auto; text-align: left; background: rgba(0,0,0,0.2); padding: 10px; border-radius: 5px; font-family: monospace;}
+    </style>
+</head>
+<body>
+
+    <div class="status-indicator idle" id="statusIndicator"><div class="icon">●</div></div>
+    <div class="status-text" id="statusText">INITIALIZING...</div>
+    <div class="debug-log" id="debugLog">System Logs:</div>
+
+    <script>
+        const statusIndicator = document.getElementById('statusIndicator');
+        const statusText = document.getElementById('statusText');
+        const debugLog = document.getElementById('debugLog');
+
+        const WS_URL = "wss://driven-emily-causing-powers.trycloudflare.com/ws/rt";
+        const SAMPLE_RATE = 16000;
+
+        let audioCtx;
+        let nextStartTime = 0;
+        let socket;
+
+        function log(message) {
+            const entry = document.createElement('div');
+            entry.textContent = `> ${message}`;
+            debugLog.prepend(entry);
+            console.log(message);
+        }
+
+        function setStatus(text, indicatorClass, icon = '●') {
+            statusText.textContent = text;
+            statusIndicator.className = `status-indicator ${indicatorClass}`;
+            statusIndicator.innerHTML = `<div class="icon">${icon}</div>`;
+        }
+
+        async function init() {
+            log("Attempting to start audio...");
+            try {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
+                
+                if (audioCtx.state === 'suspended') {
+                    log("⚠️ Audio blocked by browser. TAP ANYWHERE.");
+                    setStatus("CLICK TO UNMUTE", "idle", "🔈");
+                    window.addEventListener('click', () => {
+                        audioCtx.resume();
+                        setStatus("LISTENING", "connected", "✓");
+                    }, { once: true });
+                }
+
+                connectWebSocket();
+            } catch (e) {
+                log(`Init Error: ${e.message}`);
+            }
+        }
+
+        function connectWebSocket() {
+            log("Connecting to WebSocket...");
+            socket = new WebSocket(WS_URL);
+
+            socket.onopen = () => {
+                log("✅ WebSocket Open");
+                setStatus("CONNECTED", "connected", "✓");
+            };
+
+            socket.onmessage = async (event) => {
+                try {
+                    const msg = JSON.parse(event.data);
+                    if (msg.event === "audio_mixed_raw.data") {
+                        playRawPCM(msg.data.data.buffer);
+                    }
+                } catch (e) {
+                    // Ignore non-json messages
+                }
+            };
+
+            socket.onclose = () => {
+                setStatus("OFFLINE", "error", "✗");
+                setTimeout(connectWebSocket, 3000); // Auto-reconnect
+            };
+        }
+
+        function playRawPCM(base64) {
+            if (!audioCtx || audioCtx.state === 'suspended') return;
+
+            const binaryString = window.atob(base64);
+            const bytes = new Int16Array(binaryString.length / 2);
+            const dataView = new DataView(new Uint8Array(Array.from(binaryString, c => c.charCodeAt(0))).buffer);
+            
+            for (let i = 0; i < bytes.length; i++) {
+                bytes[i] = dataView.getInt16(i * 2, true);
+            }
+
+            const float32Data = new Float32Array(bytes.length);
+            for (let i = 0; i < bytes.length; i++) {
+                float32Data[i] = bytes[i] / 32768;
+            }
+
+            const buffer = audioCtx.createBuffer(1, float32Data.length, SAMPLE_RATE);
+            buffer.getChannelData(0).set(float32Data);
+
+            const source = audioCtx.createBufferSource();
+            source.buffer = buffer;
+            source.connect(audioCtx.destination);
+
+            const now = audioCtx.currentTime;
+            if (nextStartTime < now) nextStartTime = now;
+            
+            source.start(nextStartTime);
+            nextStartTime += buffer.duration;
+
+            setStatus("AGENT SPEAKING", "speaking", "🎤");
+            source.onended = () => {
+                if (audioCtx.currentTime >= nextStartTime - 0.1) {
+                    setStatus("CONNECTED", "connected", "✓");
+                }
+            };
+        }
+
         window.onload = init;
     </script>
 </body>
