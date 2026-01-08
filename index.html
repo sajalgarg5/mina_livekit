@@ -35,10 +35,12 @@
             socket.onopen = () => {
                 statusText.textContent = "CONNECTED TO RECALL.AI";
             };
+            console.log("WebSocket connected.");
 
             socket.onmessage = async (event) => {
                 try {
                     const msg = JSON.parse(event.data);
+                    console.log("Received message:", msg);
                     
                     // Check if this is the correct audio data event
                     if (msg.event === "audio_mixed_raw.data") {
