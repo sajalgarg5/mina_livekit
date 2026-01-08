@@ -109,22 +109,23 @@
             }
         }
 
-        function tryConnectWhenVisible() {
-        if (document.visibilityState === "visible") {
-            init();
-        } else {
-            document.addEventListener("visibilitychange", function onVis() {
-                if (document.visibilityState === "visible") {
-                    document.removeEventListener("visibilitychange", onVis);
-                    init();
-                }
-            });
-        }
-        }
+        // function tryConnectWhenVisible() {
+        // if (document.visibilityState === "visible") {
+        //     init();
+        // } else {
+        //     document.addEventListener("visibilitychange", function onVis() {
+        //         if (document.visibilityState === "visible") {
+        //             document.removeEventListener("visibilitychange", onVis);
+        //             init();
+        //         }
+        //     });
+        // }
+        // }
 
-        window.onload = tryConnectWhenVisible;
+        // window.onload = tryConnectWhenVisible;
 
         // window.onload = () => { init(); };
+        window.onload = init;
     </script>
 </body>
 </html>
