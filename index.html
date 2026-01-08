@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Recall.ai Audio Agent</title>
+    <style>
+        body {
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            font-family: Arial, sans-serif;
+        }
+
+        .status-indicator {
+            width: 120px;
+            height: 120px;
+            border-radius: 50%;
+            background-color: #e0e0e0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            margin-bottom: 20px;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+        }
+
+        .status-indicator.speaking {
+            background-color: #4CAF50;
+            animation: pulse 1s infinite;
+        }
+
+        .status-indicator.idle {
+            background-color: #9e9e9e;
+        }
+
+        @keyframes pulse {
+            0%, 100% {
+                transform: scale(1);
+                box-shadow: 0 4px 15px rgba(76, 175, 80, 0.4);
+            }
+            50% {
+                transform: scale(1.1);
+                box-shadow: 0 8px 25px rgba(76, 175, 80, 0.6);
+            }
+        }
+
+        .icon {
+            font-size: 48px;
+            color: white;
+        }
+
+        .status-text {
+            color: white;
+            font-size: 24px;
+            font-weight: bold;
+        }
+
+        .upload-container {
+            margin-bottom: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="upload-container">
+        <input type="file" id="audioUpload" accept="audio/*">
+    </div>
+    <div class="status-indicator idle" id="statusIndicator">
+        <div class="icon">🔇</div>
+    </div>
+    <div class="status-text" id="statusText">Idle</div>
+    
+    <audio id="audioPlayer" autoplay></audio>
+
+    <script>
+        const statusIndicator = document.getElementById('statusIndicator');
+        const statusText = document.getElementById('statusText');
+        const audioPlayer = document.getElementById('audioPlayer');
+        const audioUpload = document.getElementById('audioUpload');
+
+        // Play audio back to the meeting
+        function playAudioResponse(audioBlob) {
+            const audioUrl = URL.createObjectURL(audioBlob);
+            audioPlayer.src = audioUrl;
+            audioPlayer.play();
+        }
+
+        // Update visual indicator when audio plays
+        audioPlayer.onplay = () => {
+            statusIndicator.className = 'status-indicator speaking';
+            statusIndicator.innerHTML = '<div class="icon">🔊</div>';
+            statusText.textContent = 'Speaking';
+        };
+
+        audioPlayer.onended = () => {
+            statusIndicator.className = 'status-indicator idle';
+            statusIndicator.innerHTML = '<div class="icon">🔇</div>';
+            statusText.textContent = 'Idle';
+        };
+
+        audioPlayer.onpause = () => {
+            statusIndicator.className = 'status-indicator idle';
+            statusIndicator.innerHTML = '<div class="icon">🔇</div>';
+            statusText.textContent = 'Idle';
+        };
+
+        // Example: Play audio from a URL
+        function playAudioFromUrl(url) {
+            audioPlayer.src = url;
+            audioPlayer.play();
+        }
+
+        // Example: Play audio from base64
+        function playAudioFromBase64(base64Audio, mimeType = 'audio/mp3') {
+            const audioBlob = base64ToBlob(base64Audio, mimeType);
+            playAudioResponse(audioBlob);
+        }
+
+        // Helper function to convert base64 to blob
+        function base64ToBlob(base64, mimeType) {
+            const byteCharacters = atob(base64);
+            const byteNumbers = new Array(byteCharacters.length);
+            for (let i = 0; i < byteCharacters.length; i++) {
+                byteNumbers[i] = byteCharacters.charCodeAt(i);
+            }
+            const byteArray = new Uint8Array(byteNumbers);
+            return new Blob([byteArray], { type: mimeType });
+        }
+
+        // Handle audio file upload
+        audioUpload.addEventListener('change', function(event) {
+            const file = event.target.files[0];
+            if (file) {
+                playAudioResponse(file);
+            }
+        });
+
+        // --- Example usage: play audio from a URL ---
+        // Uncomment one of the following lines to test:
+
+        // playAudioFromUrl('https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3');
+
+        // OR play from base64 (short beep, replace with your own base64 string):
+        // const base64Audio = 'SUQzAwAAAAAA...'; // your base64-encoded audio string here
+        // playAudioFromBase64(base64Audio, 'audio/mp3');
+    </script>
+</body>
+</html>
