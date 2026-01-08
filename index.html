@@ -109,10 +109,7 @@
             }
         }
 
-        window.addEventListener('click', () => {
-            if (!audioCtx) init();
-            else if (audioCtx.state === 'suspended') audioCtx.resume();
-        }, { once: true });
+        window.onload = () => { init(); };
     </script>
 </body>
 </html>
