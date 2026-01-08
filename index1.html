@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Recall.ai Audio Agent</title>
+    <style>
+        body {
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            background: linear-gradient(135deg, #0c0cf8 0%, #0b0beb 100%);
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+
+        .status-indicator {
+            width: 150px;
+            height: 150px;
+            border-radius: 50%;
+            background-color: #82baf7;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            margin-bottom: 20px;
+            transition: all 0.5s ease;
+            box-shadow: 0 0 20px rgba(0,0,0,0.5);
+        }
+
+        /* Glowing effect for speaking */
+        .status-indicator.speaking {
+            background-color: #00d2ff;
+            box-shadow: 0 0 50px rgba(0, 210, 255, 0.6);
+            animation: pulse 1.5s infinite ease-in-out;
+        }
+
+        @keyframes pulse {
+            0% { transform: scale(1); opacity: 1; }
+            50% { transform: scale(1.1); opacity: 0.8; }
+            100% { transform: scale(1); opacity: 1; }
+        }
+
+        .icon { font-size: 60px; color: white; }
+        .status-text { color: white; font-size: 28px; font-weight: 300; letter-spacing: 2px; }
+    </style>
+</head>
+<body>
+
+    <div class="status-indicator idle" id="statusIndicator">
+        <div class="icon">●</div>
+    </div>
+    <div class="status-text" id="statusText">INITIALIZING</div>
+    
+    <audio id="audioPlayer" autoplay playsinline></audio>
+
+    <script>
+        const statusIndicator = document.getElementById('statusIndicator');
+        const statusText = document.getElementById('statusText');
+        const audioPlayer = document.getElementById('audioPlayer');
+
+        const AUDIO_SOURCE = 'audio_3.wav'; 
+
+        function init() {
+            audioPlayer.src = AUDIO_SOURCE;
+            
+            // Attempt to play immediately
+            const playPromise = audioPlayer.play();
+
+            if (playPromise !== undefined) {
+                playPromise.catch(error => {
+                    console.log("Autoplay blocked or file missing. Waiting for user click.");
+                    statusText.textContent = "READY";
+                    
+                    // Fallback: If blocked, play on first click anywhere on the page
+                    window.addEventListener('click', () => {
+                        audioPlayer.play();
+                    }, { once: true });
+                });
+            }
+        }
+
+        audioPlayer.onplay = () => {
+            statusIndicator.className = 'status-indicator speaking';
+            statusIndicator.innerHTML = '<div class="icon">🎤</div>';
+            statusText.textContent = 'AGENT SPEAKING';
+        };
+
+        audioPlayer.onended = () => {
+            statusIndicator.className = 'status-indicator idle';
+            statusIndicator.innerHTML = '<div class="icon">●</div>';
+            statusText.textContent = 'LISTENING';
+        };
+
+        // Start initialization
+        window.onload = init;
+    </script>
+</body>
+</html>
