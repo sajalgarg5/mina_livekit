@@ -115,83 +115,54 @@ function ensureAudioContext() {
 /* ------------------------------------------------------------------
    AUDIO PLAYBACK
 ------------------------------------------------------------------- */
-let isBuffering = true;
-let bufferQueue = [];
-const BUFFER_THRESHOLD = 8; // Adjust this (e.g., 5-10) to balance delay vs stability
-
-function playRawPCM(base64) {
-    if (!audioCtx) {
-        audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
-    }
-
-    if (audioCtx.state === 'suspended') {
-        audioCtx.resume();
-    }
-
-    // 1. If we are in the initial buffering phase, just collect data
-    if (isBuffering) {
-        bufferQueue.push(base64);
-        console.log(`⏳ Buffering: ${bufferQueue.length}/${BUFFER_THRESHOLD}`);
-
-        if (bufferQueue.length >= BUFFER_THRESHOLD) {
-            console.log("✅ Buffer full, starting playback...");
-            isBuffering = false;
-            // Flush the accumulated queue
-            bufferQueue.forEach(chunk => processAndSchedule(chunk));
-            bufferQueue = []; 
-        }
-        return; // Exit early while buffering
-    }
-
-    // 2. Normal playback after buffering is complete
-    processAndSchedule(base64);
-}
-
-// Internal helper to handle the math and scheduling
-function processAndSchedule(base64) {
+function playPCMChunk(base64) {
     try {
-        const binaryString = window.atob(base64);
-        const bytes = new Int16Array(binaryString.length / 2);
-        const dataView = new DataView(new Uint8Array(Array.from(binaryString, c => c.charCodeAt(0))).buffer);
-        
-        for (let i = 0; i < bytes.length; i++) {
-            bytes[i] = dataView.getInt16(i * 2, true);
+        ensureAudioContext();
+
+        const binary = atob(base64);
+        const buffer = new ArrayBuffer(binary.length);
+        const view = new Uint8Array(buffer);
+
+        for (let i = 0; i < binary.length; i++) {
+            view[i] = binary.charCodeAt(i);
         }
 
-        const float32Data = new Float32Array(bytes.length);
-        for (let i = 0; i < bytes.length; i++) {
-            float32Data[i] = bytes[i] / 32768;
+        const int16 = new Int16Array(buffer);
+        const float32 = new Float32Array(int16.length);
+
+        for (let i = 0; i < int16.length; i++) {
+            float32[i] = int16[i] / 32768;
         }
 
-        const audioBuffer = audioCtx.createBuffer(1, float32Data.length, SAMPLE_RATE);
-        audioBuffer.getChannelData(0).set(float32Data);
+        const audioBuffer = audioCtx.createBuffer(
+            1,
+            float32.length,
+            SAMPLE_RATE
+        );
+        audioBuffer.getChannelData(0).set(float32);
 
         const source = audioCtx.createBufferSource();
         source.buffer = audioBuffer;
         source.connect(audioCtx.destination);
 
         const now = audioCtx.currentTime;
-
-        // 3. The "Lookahead" Fix
-        // Adding + 0.1s gives the CPU/Audio Hardware a safety margin
         if (nextStartTime < now) {
-            nextStartTime = now + 0.1; 
+            nextStartTime = now;
         }
-        
+
         source.start(nextStartTime);
         nextStartTime += audioBuffer.duration;
 
-        // Visual Animation
-        const ind = document.getElementById('statusIndicator');
-        if (ind) ind.classList.add('speaking');
-        
+        const indicator = document.getElementById("statusIndicator");
+        indicator.classList.add("speaking");
+
         source.onended = () => {
-            if (audioCtx.currentTime >= nextStartTime - 0.1) {
-                if (ind) ind.classList.remove('speaking');
+            if (audioCtx.currentTime >= nextStartTime - 0.05) {
+                indicator.classList.remove("speaking");
             }
         };
-    } catch (e) {
-        console.error("Playback error:", e);
+    } catch (err) {
+        log("❌ Audio decode error");
     }
 }
 
