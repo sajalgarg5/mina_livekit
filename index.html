@@ -228,6 +228,7 @@ window.onload = () => {
 </html> -->
 
 
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -330,13 +331,6 @@ window.onload = () => {
             background: #00ffcc;
             transition: width 0.1s;
         }
-
-        .buffer-info {
-            font-size: 10px;
-            color: #888;
-            margin-top: 5px;
-            text-align: center;
-        }
     </style>
 </head>
 
@@ -351,7 +345,6 @@ window.onload = () => {
     <div class="log-container">
         <div id="log"></div>
         <div class="buffer-bar"><div id="bufferFill"></div></div>
-        <div class="buffer-info" id="bufferInfo">Buffer: 0 bytes</div>
     </div>
 
     <div class="controls">
@@ -365,10 +358,8 @@ window.onload = () => {
 ------------------------------------------------------------------- */
 const BASE_URL = "https://tel-retreat-pure-education.trycloudflare.com";
 const SAMPLE_RATE = 16000;
-// Increased buffer size for smoother playback (400ms at 16kHz mono 16-bit)
-const MIN_BUFFER_SIZE = 12800; 
-// Initial buffering delay to prevent voice breaks
-const INITIAL_BUFFER_DELAY = 300; // ms
+// MIN_BUFFER_SIZE in bytes. 3200 bytes = ~100ms of audio at 16k mono 16bit.
+const MIN_BUFFER_SIZE = 6400; 
 
 /* ------------------------------------------------------------------
    STATE
@@ -404,7 +395,7 @@ function clearLogs() {
 }
 
 /* ------------------------------------------------------------------
-   AUDIO SYSTEM (QUEUE METHOD WITH IMPROVED BUFFERING)
+   AUDIO SYSTEM (QUEUE METHOD)
 ------------------------------------------------------------------- */
 function ensureAudioContext() {
     if (!audioCtx) {
@@ -441,25 +432,25 @@ function queueAudioChunk(base64Audio) {
         // Update visual buffer bar
         const progress = Math.min((audioBuffer.length / MIN_BUFFER_SIZE) * 100, 100);
         document.getElementById("bufferFill").style.width = progress + "%";
-        document.getElementById("bufferInfo").textContent = `Buffer: ${audioBuffer.length} bytes (${(audioBuffer.length / 32).toFixed(0)}ms)`;
 
-        // Initial buffering logic - wait before starting playback
+        // Initial buffering: wait 200ms before first playback
         if (initialBuffering) {
             if (!initialBufferTimeout) {
-                log(`⏳ Initial buffering started (${INITIAL_BUFFER_DELAY}ms delay)...`);
                 initialBufferTimeout = setTimeout(() => {
                     initialBuffering = false;
                     if (audioBuffer.length >= MIN_BUFFER_SIZE && !isPlayingAudio) {
-                        log(`✅ Initial buffer ready (${audioBuffer.length} bytes). Starting playback...`);
+                        log(`⏳ Initial buffer ready (${audioBuffer.length} bytes). Starting playback...`);
                         playBufferedAudio();
                     }
-                }, INITIAL_BUFFER_DELAY);
+                }, 200); // 200ms delay
             }
-        } else {
-            // Check if we should start playing after initial buffering
-            if (audioBuffer.length >= MIN_BUFFER_SIZE && !isPlayingAudio) {
-                playBufferedAudio();
-            }
+            return;
+        }
+
+        // Check if we should start playing
+        if (audioBuffer.length >= MIN_BUFFER_SIZE && !isPlayingAudio) {
+            log(`📦 Buffer threshold met (${audioBuffer.length} bytes). Starting playback...`);
+            playBufferedAudio();
         }
     } catch (error) {
         log(`❌ Decode error: ${error.message}`);
@@ -480,15 +471,10 @@ async function playBufferedAudio() {
     document.getElementById("statusIndicator").classList.add("speaking");
 
     try {
-        // Take a chunk to play (leave some buffer for continuous playback)
-        const chunkSize = Math.min(audioBuffer.length, MIN_BUFFER_SIZE);
-        const chunkToPlay = audioBuffer.slice(0, chunkSize);
-        audioBuffer = audioBuffer.slice(chunkSize);
-        
-        // Update buffer display
-        const progress = Math.min((audioBuffer.length / MIN_BUFFER_SIZE) * 100, 100);
-        document.getElementById("bufferFill").style.width = progress + "%";
-        document.getElementById("bufferInfo").textContent = `Buffer: ${audioBuffer.length} bytes (${(audioBuffer.length / 32).toFixed(0)}ms)`;
+        // Take current buffer and clear the queue
+        const chunkToPlay = audioBuffer;
+        audioBuffer = new Uint8Array(0);
+        document.getElementById("bufferFill").style.width = "0%";
 
         const sampleCount = chunkToPlay.length / 2; // 16-bit = 2 bytes per sample
         const audioBufferNode = audioCtx.createBuffer(1, sampleCount, SAMPLE_RATE);
@@ -507,8 +493,7 @@ async function playBufferedAudio() {
 
         source.onended = () => {
             // Check if enough data accumulated during playback for the next round
-            if (audioBuffer.length >= MIN_BUFFER_SIZE / 2) {
-                // Lower threshold for continuation to maintain flow
+            if (audioBuffer.length >= MIN_BUFFER_SIZE) {
                 playBufferedAudio();
             } else {
                 isPlayingAudio = false;
@@ -521,7 +506,6 @@ async function playBufferedAudio() {
     } catch (error) {
         log(`❌ Playback error: ${error.message}`);
         isPlayingAudio = false;
-        document.getElementById("statusIndicator").classList.remove("speaking");
     }
 }
 
@@ -533,12 +517,10 @@ function connectSSE() {
 
     log("🔌 Connecting to SSE stream...");
     document.getElementById("statusText").textContent = "Connecting...";
-    
-    // Reset buffering state on new connection
+
+    // Reset buffering state
     initialBuffering = true;
     initialBufferTimeout = null;
-    audioBuffer = new Uint8Array(0);
-    isPlayingAudio = false;
 
     eventSource = new EventSource(`${BASE_URL}/listen_audio`);
 
@@ -557,16 +539,6 @@ function connectSSE() {
         document.getElementById("statusText").textContent = "Connection Lost";
         log("⚠️ SSE disconnected. Retrying in 3s...");
         eventSource.close();
-        
-        // Clear buffer on disconnect
-        audioBuffer = new Uint8Array(0);
-        isPlayingAudio = false;
-        initialBuffering = true;
-        if (initialBufferTimeout) {
-            clearTimeout(initialBufferTimeout);
-            initialBufferTimeout = null;
-        }
-        
         setTimeout(connectSSE, 3000);
     };
 }
@@ -576,7 +548,7 @@ function connectSSE() {
 ------------------------------------------------------------------- */
 window.onload = () => {
     log("🚀 Application loaded");
-    log("ℹ️ Click 'Enable Audio' or anywhere to enable audio auto-play");
+    log("ℹ️ Click anywhere to enable audio auto-play");
     connectSSE();
 };
 
