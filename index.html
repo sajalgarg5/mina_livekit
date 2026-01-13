@@ -56,16 +56,13 @@
         }
 
         #log {
-            height: 200px;
+            height: 150px;
             overflow-y: auto;
             font-family: 'Courier New', monospace;
-            font-size: 12px;
+            font-size: 11px;
             line-height: 1.5;
             color: #00ffcc;
         }
-
-        .log-entry { margin-bottom: 4px; border-bottom: 1px solid rgba(255,255,255,0.05); }
-        .log-time { color: #888; margin-right: 8px; }
 
         .controls {
             margin-top: 15px;
@@ -74,15 +71,16 @@
         }
 
         button {
-            padding: 8px 16px;
+            padding: 10px 20px;
             background: rgba(255,255,255,0.2);
             border: 1px solid white;
             color: white;
             cursor: pointer;
             border-radius: 4px;
+            font-weight: bold;
         }
 
-        button:hover { background: rgba(255,255,255,0.3); }
+        button:hover { background: rgba(255,255,255,0.4); }
     </style>
 </head>
 
@@ -92,7 +90,7 @@
         <div class="icon">●</div>
     </div>
 
-    <div id="statusText">Ready to Connect</div>
+    <div id="statusText">Disconnected</div>
     
     <div class="log-container">
         <div id="log"></div>
@@ -100,34 +98,30 @@
 
     <div class="controls">
         <button onclick="clearLogs()">Clear Logs</button>
-        <button onclick="ensureAudioContext()">Enable Audio</button>
+        <button onclick="startStream()">Connect & Start</button>
     </div>
 
 <script>
 /* ------------------------------------------------------------------
-   CONFIG
+   CONFIG & STATE
 ------------------------------------------------------------------- */
 const BASE_URL = "https://tel-retreat-pure-education.trycloudflare.com";
 const SAMPLE_RATE = 16000;
+const PREROLL_BUFFER_SIZE = 6; // Number of chunks to wait for before starting
 
-/* ------------------------------------------------------------------
-   STATE
-------------------------------------------------------------------- */
 let audioCtx = null;
 let eventSource = null;
-let nextStartTime = 0; // The "Global Audio Clock"
-let audioBufferQueue = []; // Queue of Uint8Arrays
-let isProcessing = false;
+let nextStartTime = 0; 
+let audioQueue = []; 
+let isPlaying = false;
 
 /* ------------------------------------------------------------------
    LOGGING
 ------------------------------------------------------------------- */
 function log(msg) {
     const logEl = document.getElementById("log");
-    const time = new Date().toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
     const entry = document.createElement("div");
-    entry.className = "log-entry";
-    entry.innerHTML = `<span class="log-time">[${time}]</span> ${msg}`;
+    entry.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
     logEl.appendChild(entry);
     logEl.scrollTop = logEl.scrollHeight;
 }
@@ -137,106 +131,99 @@ function clearLogs() { document.getElementById("log").innerHTML = ""; }
 /* ------------------------------------------------------------------
    AUDIO CORE
 ------------------------------------------------------------------- */
-function ensureAudioContext() {
+function initAudio() {
     if (!audioCtx) {
         audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
-        log("🎧 AudioContext Initialized");
+        log("🎧 AudioContext Created");
     }
-    if (audioCtx.state === "suspended") {
-        audioCtx.resume();
-    }
+    if (audioCtx.state === "suspended") audioCtx.resume();
 }
 
-function queueAudioChunk(base64Audio) {
-    ensureAudioContext();
+function queueChunk(base64) {
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
     
-    // Decode Base64
-    const binaryString = atob(base64Audio);
-    const bytes = new Uint8Array(binaryString.length);
-    for (let i = 0; i < binaryString.length; i++) {
-        bytes[i] = binaryString.charCodeAt(i);
-    }
+    audioQueue.push(bytes);
 
-    audioBufferQueue.push(bytes);
-
-    // If we aren't already playing, start the scheduling loop
-    if (!isProcessing) {
-        processQueue();
+    // Initial Buffering: Wait until we have a safety cushion before playing
+    if (!isPlaying && audioQueue.length >= PREROLL_BUFFER_SIZE) {
+        log(`🎯 Safety buffer full (${audioQueue.length} chunks). Starting playback...`);
+        playNext();
     }
 }
 
-async function processQueue() {
-    if (audioBufferQueue.length === 0) {
-        isProcessing = false;
+function playNext() {
+    if (audioQueue.length === 0) {
+        isPlaying = false;
+        log("⚠️ Buffer starved! Waiting for more data...");
         document.getElementById("statusIndicator").classList.remove("speaking");
         return;
     }
 
-    isProcessing = true;
+    isPlaying = true;
     document.getElementById("statusIndicator").classList.add("speaking");
 
-    const bytes = audioBufferQueue.shift();
-    const sampleCount = bytes.length / 2; // Int16 = 2 bytes per sample
-    const audioBuffer = audioCtx.createBuffer(1, sampleCount, SAMPLE_RATE);
-    const channelData = audioBuffer.getChannelData(0);
+    const bytes = audioQueue.shift();
     const dataView = new DataView(bytes.buffer);
+    const sampleCount = bytes.length / 2;
+    const buffer = audioCtx.createBuffer(1, sampleCount, SAMPLE_RATE);
+    const channel = buffer.getChannelData(0);
 
-    // Convert Int16 to Float32
+    // PCM16 to Float32 conversion
     for (let i = 0; i < sampleCount; i++) {
-        const sample = dataView.getInt16(i * 2, true);
-        channelData[i] = sample / 32768.0;
+        channel[i] = dataView.getInt16(i * 2, true) / 32768.0;
     }
 
     const source = audioCtx.createBufferSource();
-    source.buffer = audioBuffer;
+    source.buffer = buffer;
     source.connect(audioCtx.destination);
 
-    // --- REAL-TIME SCHEDULING ---
-    const currentTime = audioCtx.currentTime;
-    
-    // If the clock is behind, reset it to "now" + 50ms (tiny buffer for jitter)
-    if (nextStartTime < currentTime) {
-        nextStartTime = currentTime + 0.05;
+    // Scheduling Logic: Use a continuous timeline
+    const now = audioCtx.currentTime;
+    if (nextStartTime < now) {
+        // Reset timeline if we drift or just started (with 100ms cushion)
+        nextStartTime = now + 0.1;
     }
 
     source.start(nextStartTime);
     
-    // Update the clock for the NEXT chunk
-    nextStartTime += audioBuffer.duration;
+    // Move the pointer to the exact end of this chunk
+    nextStartTime += buffer.duration;
 
-    // Schedule the next check BEFORE this chunk finishes playing
-    // (audioBuffer.duration * 1000) converts seconds to ms
-    const delay = (audioBuffer.duration * 1000) - 10; 
-    setTimeout(processQueue, Math.max(1, delay));
+    // Schedule the next check 15ms before current chunk ends
+    const scheduleIn = (buffer.duration * 1000) - 15;
+    setTimeout(playNext, Math.max(1, scheduleIn));
 }
 
 /* ------------------------------------------------------------------
-   SSE CONNECTION
+   CONNECTIONS
 ------------------------------------------------------------------- */
-function connectSSE() {
+function startStream() {
+    initAudio();
     if (eventSource) eventSource.close();
-    log("🔌 Connecting...");
+    
+    log("🔌 Connecting to Stream...");
+    document.getElementById("statusText").textContent = "Connecting...";
 
     eventSource = new EventSource(`${BASE_URL}/listen_audio`);
 
     eventSource.addEventListener("audio", (e) => {
-        queueAudioChunk(e.data);
+        queueChunk(e.data);
     });
 
     eventSource.onopen = () => {
-        document.getElementById("statusText").textContent = "Live Streaming";
-        log("✅ Connected");
+        log("✅ SSE Connection established");
+        document.getElementById("statusText").textContent = "Live";
     };
 
-    eventSource.onerror = () => {
-        document.getElementById("statusText").textContent = "Disconnected";
+    eventSource.onerror = (err) => {
+        log("❌ Connection Error");
+        document.getElementById("statusText").textContent = "Error - Retrying";
         eventSource.close();
-        setTimeout(connectSSE, 3000);
+        setTimeout(startStream, 3000);
     };
 }
-
-window.onload = connectSSE;
-window.addEventListener("click", ensureAudioContext);
 </script>
 </body>
 </html>
