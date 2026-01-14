@@ -2,7 +2,7 @@
 class StreamProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
-    this.MAX_BUFFER_SIZE = 160000; // 10 seconds of safety
+    this.MAX_BUFFER_SIZE = 320000; // 10 seconds of safety
     this.buffer = new Float32Array(this.MAX_BUFFER_SIZE);
     this.writeIndex = 0;
     this.readIndex = 0;
@@ -11,7 +11,7 @@ class StreamProcessor extends AudioWorkletProcessor {
     // INCREASED MIN COUNT: 
     // This waits for 1.5 seconds of audio before playing. 
     // This is the ONLY way to stop breaks on a slow bot connection.
-    this.minCount = 24000; 
+    this.minCount = 2400; 
     this.isPlaying = false;
 
     this.port.onmessage = (e) => {
