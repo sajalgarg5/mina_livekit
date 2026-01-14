@@ -11,7 +11,7 @@ class StreamProcessor extends AudioWorkletProcessor {
     // INCREASED MIN COUNT: 
     // This waits for 1.5 seconds of audio before playing. 
     // This is the ONLY way to stop breaks on a slow bot connection.
-    this.minCount = 2400; 
+    this.minCount = 5000;             // changed from 24000
     this.isPlaying = false;
 
     this.port.onmessage = (e) => {
