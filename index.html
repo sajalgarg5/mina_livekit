@@ -46,7 +46,7 @@
             streamNode = new AudioWorkletNode(audioCtx, 'stream_processor');
             
             analyser = audioCtx.createAnalyser();
-            analyser.fftSize = 256; // Fast visualizer, minimal CPU impact
+            analyser.fftSize = 512; // Fast visualizer, minimal CPU impact
             
             streamNode.connect(analyser);
             analyser.connect(audioCtx.destination);
