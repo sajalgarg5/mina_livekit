@@ -10,6 +10,7 @@
         #statusText { font-size: 18px; font-weight: bold; text-transform: uppercase; margin-bottom: 20px;}
         canvas { width: 300px; height: 80px; background: rgba(0,0,0,0.1); border-radius: 8px; margin-bottom: 20px; }
         #log { font-size: 11px; width: 80%; height: 80px; overflow-y: auto; background: rgba(0,0,0,0.2); padding: 10px; border-radius: 6px; font-family: monospace; }
+        .buffer-info { font-size: 10px; color: #82baf7; margin-top: 5px; }
     </style>
 </head>
 <body>
@@ -17,16 +18,24 @@
     <div id="statusText">Click anywhere to start</div>
     <canvas id="visualizer"></canvas>
     <div id="log"></div>
+    <div class="buffer-info" id="bufferStats">Buffer: 0ms</div>
 
 <script type="module">
     import { AudioAnalysis } from './audio_analysis.js';
 
+    // --- CONFIGURATION ---
     const BASE_URL = "https://tel-retreat-pure-education.trycloudflare.com"; 
-    const SAMPLE_RATE = 16000;
+    const SAMPLE_RATE = 16000; 
+    const JITTER_BUFFER_MS = 300; // Wait for 300ms of audio before starting
+    const SAMPLES_REQUIRED = (SAMPLE_RATE * JITTER_BUFFER_MS) / 1000;
 
     let audioCtx = null;
     let streamNode = null;
     let analyser = null;
+    
+    // Buffer State
+    let isStarted = false;
+    let prefillBuffer = [];
 
     function log(msg) {
         const el = document.getElementById("log");
@@ -39,26 +48,72 @@
         try {
             audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
             
-            // Load the Worklet file
+            // Load the Worklet
             await audioCtx.audioWorklet.addModule('stream_processor.js');
             streamNode = new AudioWorkletNode(audioCtx, 'stream_processor');
 
-            // Setup Analyser for your AudioAnalysis class
+            // Setup Analyser
             analyser = audioCtx.createAnalyser();
             analyser.fftSize = 2048;
             
-            // Chain: Worklet -> Analyser -> Speakers
             streamNode.connect(analyser);
             analyser.connect(audioCtx.destination);
 
             await audioCtx.resume();
-            log("✅ Audio System Active");
-            document.getElementById("statusText").textContent = "Streaming Live";
+            log("✅ Audio Engine Ready. Waiting for data...");
+            document.getElementById("statusText").textContent = "Syncing Stream...";
             
             startVisualization();
             connectSSE();
         } catch (e) {
             log("❌ Error: " + e.message);
+        }
+    }
+
+    /**
+     * Decodes Base64 PCM and handles the Jitter Buffer
+     */
+    function handleIncomingAudio(base64) {
+        if (!streamNode) return;
+
+        try {
+            // Decode Base64
+            const binaryString = atob(base64);
+            const bytes = new Uint8Array(binaryString.length);
+            for (let i = 0; i < binaryString.length; i++) {
+                bytes[i] = binaryString.charCodeAt(i);
+            }
+
+            // Convert PCM16 to Float32
+            const dataView = new DataView(bytes.buffer);
+            const float32 = new Float32Array(Math.floor(bytes.length / 2));
+            for (let i = 0; i < float32.length; i++) {
+                float32[i] = dataView.getInt16(i * 2, true) / 32768.0;
+            }
+
+            // Jitter Buffer Logic: Prevents "breaking" due to network lag
+            if (!isStarted) {
+                for (let i = 0; i < float32.length; i++) prefillBuffer.push(float32[i]);
+                
+                const currentMs = Math.round((prefillBuffer.length / SAMPLE_RATE) * 1000);
+                document.getElementById("bufferStats").textContent = `Buffering: ${currentMs}ms / ${JITTER_BUFFER_MS}ms`;
+
+                if (prefillBuffer.length >= SAMPLES_REQUIRED) {
+                    log("🚀 Buffer ready, playing...");
+                    streamNode.port.postMessage({ 
+                        event: 'write', 
+                        buffer: new Float32Array(prefillBuffer) 
+                    });
+                    prefillBuffer = [];
+                    isStarted = true;
+                    document.getElementById("statusText").textContent = "Live Streaming";
+                }
+            } else {
+                // Buffer is already established, stream normally
+                streamNode.port.postMessage({ event: 'write', buffer: float32 });
+            }
+        } catch (err) {
+            console.error("Audio Processing Error:", err);
         }
     }
 
@@ -69,21 +124,23 @@
 
         function draw() {
             requestAnimationFrame(draw);
+            if (!analyser) return;
+
             const data = AudioAnalysis.getFrequencies(analyser, SAMPLE_RATE, null, 'voice');
             const values = data.values;
 
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             const barWidth = canvas.width / values.length;
-            let volumeSum = 0;
+            let vol = 0;
 
             for (let i = 0; i < values.length; i++) {
                 const height = values[i] * canvas.height;
-                volumeSum += values[i];
+                vol += values[i];
                 ctx.fillStyle = '#00d2ff';
                 ctx.fillRect(i * barWidth, canvas.height - height, barWidth - 1, height);
             }
 
-            if ((volumeSum / values.length) > 0.05) {
+            if ((vol / values.length) > 0.05) {
                 indicator.classList.add("speaking");
             } else {
                 indicator.classList.remove("speaking");
@@ -94,21 +151,19 @@
 
     function connectSSE() {
         const eventSource = new EventSource(`${BASE_URL}/listen_audio`);
-        eventSource.addEventListener("audio", (event) => {
-            const binaryString = atob(event.data);
-            const bytes = new Uint8Array(binaryString.length);
-            for (let i = 0; i < binaryString.length; i++) bytes[i] = binaryString.charCodeAt(i);
-            
-            const dataView = new DataView(bytes.buffer);
-            const float32 = new Float32Array(bytes.length / 2);
-            for (let i = 0; i < float32.length; i++) {
-                float32[i] = dataView.getInt16(i * 2, true) / 32768.0;
-            }
+        
+        eventSource.onopen = () => log("🔌 SSE Connected");
 
-            if (streamNode) {
-                streamNode.port.postMessage({ event: 'write', buffer: float32 });
-            }
+        eventSource.addEventListener("audio", (event) => {
+            handleIncomingAudio(event.data);
         });
+
+        eventSource.onerror = () => {
+            log("⚠️ Connection dropped. Retrying...");
+            eventSource.close();
+            isStarted = false; // Reset jitter buffer on disconnect
+            setTimeout(connectSSE, 2000);
+        };
     }
 
     window.onload = () => initAudio();
