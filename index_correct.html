@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <title>Recall Bot - Multi-Threaded Audio</title>
+    <style>
+        body { display: flex; flex-direction: column; justify-content: center; align-items: center; height: 100vh; margin: 0; background: #00001a; color: white; font-family: 'Segoe UI', sans-serif; overflow: hidden; }
+        .status-indicator { width: 120px; height: 120px; border-radius: 50%; background-color: #111; border: 4px solid #333; transition: 0.1s ease; }
+        .speaking { background-color: #00d2ff; box-shadow: 0 0 40px #00d2ff; border-color: #fff; }
+        #statusText { margin-top: 20px; font-weight: bold; letter-spacing: 2px; color: #82baf7; }
+        #log { margin-top: 20px; font-size: 11px; width: 85%; height: 100px; overflow-y: auto; background: rgba(0,0,0,0.6); padding: 10px; border-radius: 8px; font-family: 'Courier New', monospace; color: #00ff00; }
+    </style>
+</head>
+<body>
+    <div class="status-indicator" id="statusIndicator"></div>
+    <div id="statusText">SYSTEM STANDBY</div>
+    <div id="log"></div>
+
+<script type="module">
+    import { AudioAnalysis } from './audio_analysis.js';
+
+    const SSE_URL = "https://tel-retreat-pure-education.trycloudflare.com/listen_audio"; 
+    const SAMPLE_RATE = 16000;
+
+    let audioCtx, streamNode, analyser, decoderWorker;
+
+    function log(msg) {
+        const el = document.getElementById("log");
+        el.innerHTML += `<div>[${new Date().toLocaleTimeString()}] ${msg}</div>`;
+        el.scrollTop = el.scrollHeight;
+    }
+
+    async function initAudio() {
+        if (audioCtx) return;
+        try {
+            log("🚀 Initializing Multi-Threaded Audio...");
+            
+            // 1. Audio Context with latency priority
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)({ 
+                sampleRate: SAMPLE_RATE,
+                latencyHint: 'playback' 
+            });
+
+            // 2. Load the Worklet (Thread 2)
+            await audioCtx.audioWorklet.addModule('stream_processor.js');
+            streamNode = new AudioWorkletNode(audioCtx, 'stream_processor');
+            
+            analyser = audioCtx.createAnalyser();
+            analyser.fftSize = 256; // Fast visualizer, minimal CPU impact
+            
+            streamNode.connect(analyser);
+            analyser.connect(audioCtx.destination);
+            await audioCtx.resume();
+
+            // 3. Load the Decoder Worker (Thread 3)
+            decoderWorker = new Worker('decoder_worker.js');
+            
+            decoderWorker.onmessage = (e) => {
+                if (e.data.type === 'data') {
+                    const floatBuffer = new Float32Array(e.data.buffer);
+                    streamNode.port.postMessage({ event: 'write', buffer: floatBuffer });
+                } else if (e.data.type === 'log') {
+                    log(e.data.msg);
+                }
+            };
+
+            // 4. Connect the Background Worker to the Network
+            decoderWorker.postMessage({ command: 'connect', url: SSE_URL });
+
+            document.getElementById("statusText").textContent = "STREAM ACTIVE";
+            log("✅ System ready. Audio isolated on background threads.");
+            startVisualizer();
+        } catch (e) {
+            log("❌ Init Error: " + e.message);
+        }
+    }
+
+    function startVisualizer() {
+        const indicator = document.getElementById("statusIndicator");
+        const update = () => {
+            requestAnimationFrame(update);
+            if (!analyser) return;
+            const data = AudioAnalysis.getFrequencies(analyser, SAMPLE_RATE, null, 'voice');
+            const vol = data.values.reduce((a, b) => a + b, 0) / data.values.length;
+            
+            if (vol > 0.04) indicator.classList.add("speaking");
+            else indicator.classList.remove("speaking");
+        };
+        update();
+    }
+
+    // Delay start by 1 second to let the Recall Bot browser stabilize
+    window.onload = () => {
+        log("💡 Bot detected. Waiting 1s for network stabilization...");
+        setTimeout(initAudio, 1000);
+    };
+</script>
+</body>
+</html>
