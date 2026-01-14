@@ -2,163 +2,98 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8" />
-    <title>Recall.ai Real-time Audio Agent</title>
+    <title>Recall Bot - Multi-Threaded Audio</title>
     <style>
-        body { display: flex; flex-direction: column; justify-content: center; align-items: center; height: 100vh; margin: 0; background: #0c0cf8; font-family: sans-serif; color: white; }
-        .status-indicator { width: 150px; height: 150px; border-radius: 50%; background-color: #82baf7; display: flex; justify-content: center; align-items: center; margin-bottom: 20px; transition: 0.3s; }
-        .speaking { background-color: #00d2ff; box-shadow: 0 0 50px #00d2ff; transform: scale(1.1); }
-        .icon { font-size: 60px; }
-        #statusText { font-size: 18px; font-weight: bold; text-transform: uppercase; }
-        #log { margin-top: 20px; font-size: 12px; width: 80%; height: 120px; overflow-y: auto; background: rgba(0,0,0,0.2); padding: 10px; border-radius: 6px; }
+        body { display: flex; flex-direction: column; justify-content: center; align-items: center; height: 100vh; margin: 0; background: #00001a; color: white; font-family: 'Segoe UI', sans-serif; overflow: hidden; }
+        .status-indicator { width: 120px; height: 120px; border-radius: 50%; background-color: #111; border: 4px solid #333; transition: 0.1s ease; }
+        .speaking { background-color: #00d2ff; box-shadow: 0 0 40px #00d2ff; border-color: #fff; }
+        #statusText { margin-top: 20px; font-weight: bold; letter-spacing: 2px; color: #82baf7; }
+        #log { margin-top: 20px; font-size: 11px; width: 85%; height: 100px; overflow-y: auto; background: rgba(0,0,0,0.6); padding: 10px; border-radius: 8px; font-family: 'Courier New', monospace; color: #00ff00; }
     </style>
 </head>
 <body>
-    <div class="status-indicator" id="statusIndicator"><div class="icon">●</div></div>
-    <div id="statusText">Connecting…</div>
+    <div class="status-indicator" id="statusIndicator"></div>
+    <div id="statusText">SYSTEM STANDBY</div>
     <div id="log"></div>
 
-<script>
-const BASE_URL = "https://tel-retreat-pure-education.trycloudflare.com";
-const SAMPLE_RATE = 16000;
-const MIN_BUFFER_SIZE = 1280; 
+<script type="module">
+    import { AudioAnalysis } from './audio_analysis.js';
 
-let audioContextPlayback = null;
-let audioBuffer = new Uint8Array(0);
-let isPlayingAudio = false;
-window.audioInterrupted = false;
+    const SSE_URL = "https://tel-retreat-pure-education.trycloudflare.com/listen_audio"; 
+    const SAMPLE_RATE = 16000;
 
-function log(msg) {
-    const el = document.getElementById("log");
-    el.innerHTML += `[${new Date().toLocaleTimeString()}] ${msg}<br>`;
-    el.scrollTop = el.scrollHeight;
-}
+    let audioCtx, streamNode, analyser, decoderWorker;
 
-function queueAudioChunk(base64Audio) {
-    try {
-        const binaryString = atob(base64Audio);
-        const chunk = new Uint8Array(binaryString.length);
-        for (let i = 0; i < binaryString.length; i++) {
-            chunk[i] = binaryString.charCodeAt(i);
-        }
-
-        // Append to master buffer
-        const newBuffer = new Uint8Array(audioBuffer.length + chunk.length);
-        newBuffer.set(audioBuffer);
-        newBuffer.set(chunk, audioBuffer.length);
-        audioBuffer = newBuffer;
-
-        // Reference Logic: Play when buffer is large enough
-        if (audioBuffer.length >= MIN_BUFFER_SIZE && !isPlayingAudio && !window.audioInterrupted) {
-            playBufferedAudio();
-        }
-    } catch (error) {
-        console.error("Error queueing audio chunk:", error);
-    }
-}
-
-async function playBufferedAudio() {
-    if (window.audioInterrupted) {
-        isPlayingAudio = false;
-        return;
+    function log(msg) {
+        const el = document.getElementById("log");
+        el.innerHTML += `<div>[${new Date().toLocaleTimeString()}] ${msg}</div>`;
+        el.scrollTop = el.scrollHeight;
     }
 
-    if (audioBuffer.length === 0) {
-        isPlayingAudio = false;
-        return;
+    async function initAudio() {
+        if (audioCtx) return;
+        try {
+            log("🚀 Initializing Multi-Threaded Audio...");
+            
+            // 1. Audio Context with latency priority
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)({ 
+                sampleRate: SAMPLE_RATE,
+                latencyHint: 'playback' 
+            });
+
+            // 2. Load the Worklet (Thread 2)
+            await audioCtx.audioWorklet.addModule('stream_processor.js');
+            streamNode = new AudioWorkletNode(audioCtx, 'stream_processor');
+            
+            analyser = audioCtx.createAnalyser();
+            analyser.fftSize = 256; // Fast visualizer, minimal CPU impact
+            
+            streamNode.connect(analyser);
+            analyser.connect(audioCtx.destination);
+            await audioCtx.resume();
+
+            // 3. Load the Decoder Worker (Thread 3)
+            decoderWorker = new Worker('decoder_worker.js');
+            
+            decoderWorker.onmessage = (e) => {
+                if (e.data.type === 'data') {
+                    const floatBuffer = new Float32Array(e.data.buffer);
+                    streamNode.port.postMessage({ event: 'write', buffer: floatBuffer });
+                } else if (e.data.type === 'log') {
+                    log(e.data.msg);
+                }
+            };
+
+            // 4. Connect the Background Worker to the Network
+            decoderWorker.postMessage({ command: 'connect', url: SSE_URL });
+
+            document.getElementById("statusText").textContent = "STREAM ACTIVE";
+            log("✅ System ready. Audio isolated on background threads.");
+            startVisualizer();
+        } catch (e) {
+            log("❌ Init Error: " + e.message);
+        }
     }
 
-    isPlayingAudio = true;
-    document.getElementById("statusIndicator").classList.add("speaking");
-
-    try {
-        if (!audioContextPlayback) {
-            audioContextPlayback = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
-        }
-        if (audioContextPlayback.state === "suspended") {
-            await audioContextPlayback.resume();
-        }
-
-        // --- FIXED BUFFER SLICING ---
-        // Instead of taking EVERYTHING, we take exactly MIN_BUFFER_SIZE
-        // This leaves the rest of the incoming data for the NEXT onended call
-        const chunkSize = Math.max(MIN_BUFFER_SIZE, audioBuffer.length);
-        const chunkToPlay = audioBuffer.slice(0, chunkSize);
-        audioBuffer = audioBuffer.slice(chunkSize);
-
-        const sampleCount = chunkToPlay.length / 2;
-        const audioBufferNode = audioContextPlayback.createBuffer(1, sampleCount, SAMPLE_RATE);
-        const channelData = audioBufferNode.getChannelData(0);
-        const dataView = new DataView(chunkToPlay.buffer);
-
-        for (let i = 0; i < sampleCount; i++) {
-            const sample = dataView.getInt16(i * 2, true);
-            channelData[i] = sample / 32768.0;
-        }
-
-        const source = audioContextPlayback.createBufferSource();
-        window.currentAudioSource = source; 
-        source.buffer = audioBufferNode;
-        source.connect(audioContextPlayback.destination);
-
-        // Reference Logic: use onended to trigger the next chunk
-        source.onended = () => {
-            if (window.audioInterrupted) {
-                isPlayingAudio = false;
-                document.getElementById("statusIndicator").classList.remove("speaking");
-                return;
-            }
-
-            if (audioBuffer.length >= MIN_BUFFER_SIZE) {
-                playBufferedAudio();
-            } else {
-                isPlayingAudio = false;
-                document.getElementById("statusIndicator").classList.remove("speaking");
-                
-                // Reference Logic: Check again after 10ms
-                window.audioPlaybackTimeout = setTimeout(() => {
-                    if (!window.audioInterrupted && audioBuffer.length >= MIN_BUFFER_SIZE) {
-                        playBufferedAudio();
-                    }
-                }, 10);
-            }
+    function startVisualizer() {
+        const indicator = document.getElementById("statusIndicator");
+        const update = () => {
+            requestAnimationFrame(update);
+            if (!analyser) return;
+            const data = AudioAnalysis.getFrequencies(analyser, SAMPLE_RATE, null, 'voice');
+            const vol = data.values.reduce((a, b) => a + b, 0) / data.values.length;
+            
+            if (vol > 0.04) indicator.classList.add("speaking");
+            else indicator.classList.remove("speaking");
         };
-
-        const currentTime = audioContextPlayback.currentTime;
-        source.start(currentTime);
-
-    } catch (error) {
-        console.error("Error playing audio:", error);
-        isPlayingAudio = false;
+        update();
     }
-}
 
-function connectSSE() {
-    log("🔌 Connecting...");
-    document.getElementById("statusText").textContent = "Connecting…";
-    const eventSource = new EventSource(`${BASE_URL}/listen_audio`);
-
-    eventSource.onopen = () => {
-        log("✅ Connected");
-        document.getElementById("statusText").textContent = "Live Streaming";
+    // Delay start by 1 second to let the Recall Bot browser stabilize
+    window.onload = () => {
+        log("💡 Bot detected. Waiting 1s for network stabilization...");
+        setTimeout(initAudio, 1000);
     };
-
-    eventSource.addEventListener("audio", (event) => {
-        queueAudioChunk(event.data);
-    });
-
-    eventSource.onerror = () => {
-        eventSource.close();
-        setTimeout(connectSSE, 3000);
-    };
-}
-
-window.addEventListener("click", () => {
-    if (audioContextPlayback && audioContextPlayback.state === "suspended") {
-        audioContextPlayback.resume();
-    }
-});
-
-window.onload = connectSSE;
 </script>
 </body>
 </html>
