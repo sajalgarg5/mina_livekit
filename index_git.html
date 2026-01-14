@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <title>Recall Bot - Stable Stream</title>
+    <style>
+        body { display: flex; flex-direction: column; justify-content: center; align-items: center; height: 100vh; margin: 0; background: #000033; font-family: sans-serif; color: white; overflow: hidden; }
+        .status-indicator { width: 100px; height: 100px; border-radius: 50%; background-color: #333; border: 4px solid rgba(255,255,255,0.1); }
+        .speaking { background-color: #00d2ff; box-shadow: 0 0 30px #00d2ff; }
+        #log { margin-top: 20px; font-size: 10px; width: 90%; height: 80px; overflow-y: auto; background: rgba(0,0,0,0.4); padding: 10px; border-radius: 5px; font-family: monospace; }
+    </style>
+</head>
+<body>
+    <div class="status-indicator" id="statusIndicator"></div>
+    <div id="statusText" style="margin-top:10px;">Waiting for connection...</div>
+    <div id="log"></div>
+
+<script type="module">
+    import { AudioAnalysis } from './audio_analysis.js';
+
+    const BASE_URL = "https://tel-retreat-pure-education.trycloudflare.com"; 
+    const SAMPLE_RATE = 16000;
+
+    let audioCtx = null;
+    let streamNode = null;
+    let analyser = null;
+    let leftoverByte = null;
+
+    function log(msg) {
+        const el = document.getElementById("log");
+        el.innerHTML += `<div>[${new Date().toLocaleTimeString()}] ${msg}</div>`;
+        el.scrollTop = el.scrollHeight;
+    }
+
+    async function initAudio() {
+        if (audioCtx) return;
+        try {
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)({ 
+                sampleRate: SAMPLE_RATE,
+                latencyHint: 'playback' // Crucial: prioritizes steady audio over raw speed
+            });
+
+            await audioCtx.audioWorklet.addModule('stream_processor.js');
+            streamNode = new AudioWorkletNode(audioCtx, 'stream_processor');
+            
+            // REDUCED: Large FFT sizes (2048+) block the main thread during SSE packets
+            analyser = audioCtx.createAnalyser();
+            analyser.fftSize = 512; 
+            
+            streamNode.connect(analyser);
+            analyser.connect(audioCtx.destination);
+            await audioCtx.resume();
+            
+            log("✅ Audio Engine Ready");
+            connectSSE();
+            startVisualizer();
+        } catch (e) {
+            log("❌ Error: " + e.message);
+        }
+    }
+
+    // Process audio in a "non-blocking" way
+    function processChunk(base64) {
+        if (!streamNode) return;
+
+        // Use a synchronous but fast conversion
+        const binary = atob(base64);
+        const len = binary.length;
+        let bytes = new Uint8Array(len);
+        for (let i = 0; i < len; i++) {
+            bytes[i] = binary.charCodeAt(i);
+        }
+
+        // Stitching for PCM alignment
+        if (leftoverByte !== null) {
+            let stitched = new Uint8Array(bytes.length + 1);
+            stitched[0] = leftoverByte;
+            stitched.set(bytes, 1);
+            bytes = stitched;
+            leftoverByte = null;
+        }
+
+        if (bytes.length % 2 !== 0) {
+            leftoverByte = bytes[bytes.length - 1];
+            bytes = bytes.slice(0, -1);
+        }
+
+        // Convert to Float32 and ship to Worklet immediately
+        const float32 = new Float32Array(bytes.length / 2);
+        const view = new DataView(bytes.buffer);
+        for (let i = 0; i < float32.length; i++) {
+            float32[i] = view.getInt16(i * 2, true) / 32768;
+        }
+
+        streamNode.port.postMessage({ event: 'write', buffer: float32 });
+    }
+
+    function connectSSE() {
+        const ev = new EventSource(`${BASE_URL}/listen_audio`);
+        
+        // Use the default event listener for maximum speed
+        ev.onmessage = (e) => {
+            // If your server sends JSON or specific event types, adjust here
+            // This assumes the data is raw base64
+        };
+
+        ev.addEventListener("audio", (e) => {
+            // We do NOT use async/await inside the listener here
+            // because we want the browser to clear the network buffer as fast as possible
+            processChunk(e.data);
+        });
+
+        ev.onopen = () => log("🔌 SSE Connected");
+        ev.onerror = () => {
+            log("📡 SSE Retry...");
+            ev.close();
+            setTimeout(connectSSE, 2000);
+        };
+    }
+
+    function startVisualizer() {
+        const indicator = document.getElementById("statusIndicator");
+        const update = () => {
+            requestAnimationFrame(update);
+            if (!analyser) return;
+            const data = AudioAnalysis.getFrequencies(analyser, SAMPLE_RATE, null, 'voice');
+            const vol = data.values.reduce((a, b) => a + b, 0) / data.values.length;
+            if (vol > 0.04) indicator.classList.add("speaking");
+            else indicator.classList.remove("speaking");
+        };
+        update();
+    }
+
+    window.onload = () => {
+        setTimeout(initAudio, 3000);
+    };
+</script>
+</body>
+</html>
