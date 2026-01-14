@@ -128,10 +128,10 @@ let isShuttingDown = false;
 
 // CONFIGURATION
 const BATCH_SIZE = 15;           // Number of packets to group together
-const FLUSH_INTERVAL = 10;       // Milliseconds to wait before forcing a process of partial batches
+const FLUSH_INTERVAL = 200;       // Milliseconds to wait before forcing a process of partial batches
 const MAX_RECONNECT_ATTEMPTS = 5; // Maximum reconnection attempts before giving up
 const RECONNECT_DELAY = 2000;    // Base delay between reconnection attempts (ms)
-const MAX_QUEUE_SIZE = 1000;     // Prevent memory overflow
+const MAX_QUEUE_SIZE = 10000;     // Prevent memory overflow
 
 self.onmessage = function(e) {
     if (e.data.command === 'connect') {
