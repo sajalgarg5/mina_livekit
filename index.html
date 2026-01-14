@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8" />
-    <title>Recall Bot Audio - Stable Stream</title>
+    <title>Recall Bot Audio - Async Stable Stream</title>
     <style>
         body { 
             display: flex; flex-direction: column; justify-content: center; align-items: center; 
@@ -24,13 +24,12 @@
 </head>
 <body>
     <div class="status-indicator" id="statusIndicator"></div>
-    <div id="statusText">Awaiting Interaction...</div>
+    <div id="statusText">System Initializing...</div>
     <div id="log"></div>
 
 <script type="module">
     import { AudioAnalysis } from './audio_analysis.js';
 
-    // Settings optimized for Recall.ai Bot environments
     const BASE_URL = "https://tel-retreat-pure-education.trycloudflare.com"; 
     const SAMPLE_RATE = 16000;
 
@@ -38,6 +37,7 @@
     let streamNode = null;
     let analyser = null;
     let leftoverByte = null;
+    let isProcessing = false;
 
     function log(msg) {
         const el = document.getElementById("log");
@@ -48,8 +48,8 @@
     }
 
     /**
-     * Initializes the Audio Stack with a 'playback' latency hint.
-     * This tells the bot's browser to use a larger internal hardware buffer.
+     * Initializes the AudioContext. 
+     * We use async/await here to ensure the Worklet is fully loaded before continuing.
      */
     async function initAudio() {
         if (audioCtx) return;
@@ -60,39 +60,48 @@
                 latencyHint: 'playback' 
             });
 
+            // Ensure module is loaded before creating the node
             await audioCtx.audioWorklet.addModule('stream_processor.js');
             
             streamNode = new AudioWorkletNode(audioCtx, 'stream_processor');
             analyser = audioCtx.createAnalyser();
-            analyser.fftSize = 512; // Smaller FFT for less CPU usage
+            analyser.fftSize = 512;
             
             streamNode.connect(analyser);
             analyser.connect(audioCtx.destination);
             
+            // Resume context (crucial for modern browsers)
             await audioCtx.resume();
             
-            log("✅ Audio Worklet Ready");
-            document.getElementById("statusText").textContent = "Stream Active";
+            log("✅ Audio Worklet Thread Ready");
+            document.getElementById("statusText").textContent = "Streaming Live";
             
+            // Connect to the data source
             connectSSE();
             startVisualizerLoop();
         } catch (e) {
-            log("❌ Init Error: " + e.message);
+            log("❌ Audio Engine Error: " + e.message);
+            console.error(e);
         }
     }
 
     /**
-     * Handles the Base64 chunks and manages byte-alignment.
+     * Async handler for incoming audio packets.
+     * This prevents the SSE stream from "piling up" and breaking the voice.
      */
-    function handleAudioData(base64) {
+    async function handleAudioData(base64) {
+        // If we haven't set up the stream or are overloaded, return early
         if (!streamNode) return;
+
+        // Using a microtask to ensure we don't block the main SSE event loop
+        await new Promise(resolve => setTimeout(resolve, 0));
 
         try {
             const binary = atob(base64);
             let bytes = new Uint8Array(binary.length);
             for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
 
-            // Stitch partial PCM samples (Protects against static noise)
+            // PCM Byte Alignment (Stitching)
             if (leftoverByte !== null) {
                 let stitched = new Uint8Array(bytes.length + 1);
                 stitched[0] = leftoverByte;
@@ -108,31 +117,39 @@
             const float32 = new Float32Array(bytes.length / 2);
             const view = new DataView(bytes.buffer);
             for (let i = 0; i < float32.length; i++) {
+                // Divide by 32768 to normalize Int16 to Float32 [-1.0, 1.0]
                 float32[i] = view.getInt16(i * 2, true) / 32768.0;
             }
 
-            // Feed the thread-isolated circular buffer
+            // Post to the high-priority AudioWorklet thread
             streamNode.port.postMessage({ event: 'write', buffer: float32 });
+
         } catch (err) {
-            console.error("PCM Decode Error:", err);
+            console.error("PCM Processing Error:", err);
         }
     }
 
+    /**
+     * SSE Connection.
+     */
     function connectSSE() {
         const ev = new EventSource(`${BASE_URL}/listen_audio`);
         
-        ev.addEventListener("audio", (e) => handleAudioData(e.data));
+        // Use an async wrapper for the event listener
+        ev.addEventListener("audio", async (e) => {
+            await handleAudioData(e.data);
+        });
         
-        ev.onopen = () => log("🔌 SSE Connected to Bot Source");
+        ev.onopen = () => log("🔌 SSE Connection Established");
         ev.onerror = () => {
-            log("📡 Connection lost, retrying...");
+            log("📡 SSE Connection Lost. Reconnecting...");
             ev.close();
             setTimeout(connectSSE, 2000);
         };
     }
 
     /**
-     * Simplified visualizer loop to save Bot CPU cycles.
+     * Visualizer Loop.
      */
     function startVisualizerLoop() {
         const indicator = document.getElementById("statusIndicator");
@@ -141,7 +158,6 @@
             requestAnimationFrame(update);
             if (!analyser) return;
 
-            // Use your provided AudioAnalysis class
             const data = AudioAnalysis.getFrequencies(analyser, SAMPLE_RATE, null, 'voice');
             const vol = data.values.reduce((a, b) => a + b, 0) / data.values.length;
             
@@ -154,22 +170,26 @@
         update();
     }
     
+    /**
+     * Delayed Start Logic.
+     */
     function startDelayedAudio(delayMs) {
-    log(`⏳ Waiting ${delayMs}ms before starting audio engine...`);
-    
-    setTimeout(async () => {
-        try {
+        log(`⏳ System standby: ${delayMs}ms...`);
+        
+        setTimeout(async () => {
+            log("🚀 Initializing Audio Engine...");
             await initAudio();
-            log("🚀 Delayed initialization complete.");
-        } catch (err) {
-            log("❌ Delayed init failed: " + err.message);
-        }
-    }, delayMs);
-}
-    // Interaction is mandatory for Web Audio to start
+        }, delayMs);
+    }
+
+    // Recall Bots will trigger this automatically on load
     window.onload = () => {
-    startDelayedAudio(5000); 
-};
+        // 8 seconds delay as requested to let the bot environment stabilize
+        startDelayedAudio(8000); 
+    };
+
+    // Manual fallback for local testing
+    // window.onclick = () => initAudio();
 </script>
 </body>
 </html>
