@@ -69,8 +69,8 @@ class StreamProcessor extends AudioWorkletProcessor {
     
     // ADAPTIVE BUFFERING STRATEGY
     this.MIN_STARTUP_BUFFER = 6400;   // 400ms initial buffer (6400 samples @ 16kHz)
-    this.MIN_RESUME_BUFFER = 12000;   // 750ms buffer when resuming after silence
-    this.MIN_PLAYING_BUFFER = 3200;   // 200ms minimum during playback
+    this.MIN_RESUME_BUFFER = 8000;   // 500ms buffer when resuming after silence
+    this.MIN_PLAYING_BUFFER = 1600;   // 100ms minimum during playback
     
     this.isPlaying = false;
     this.wasUnderflow = false;        // Track if we just had an underflow
