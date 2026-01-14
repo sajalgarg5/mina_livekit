@@ -73,7 +73,7 @@
     }
 
     // Modern browsers require a click to allow audio
-    window.onclick = () => {
+    window.onload = () => {
         if (!audioContext) {
             audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
             document.getElementById("status").textContent = "AUDIO ENGINE READY";
