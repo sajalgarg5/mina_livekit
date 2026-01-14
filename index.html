@@ -29,7 +29,7 @@ const MIN_BUFFER_SIZE = 1280;  -->
     // Jitter Buffer Settings
     // For 16kHz, 15 chunks is usually ~300-600ms of audio safety
     const BUFFER_THRESHOLD = 15; 
-    const LOOKAHEAD_MARGIN = 0.15; // 150ms lookahead to bridge network jitter
+    const LOOKAHEAD_MARGIN = 0.35; // 350ms lookahead to bridge network jitter
 
     let audioCtx;
     let nextStartTime = 0;
