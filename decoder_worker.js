@@ -366,18 +366,24 @@
 
 
 
+/**
+ * decoder_worker.js - Continuous Streaming with Smart Buffering
+ * Sends small chunks frequently while maintaining a minimum buffer on first start
+ */
+
 let leftoverByte = null;
-let audioBuffer = new Uint8Array(0);  // Continuous byte buffer
+let audioBuffer = new Uint8Array(0);
 let eventSource = null;
 let reconnectAttempts = 0;
 let isShuttingDown = false;
-let isPlayingAudio = false;           // Track if audio is currently playing
-let sendTimeout = null;                // For safety flush
+let hasStartedPlaying = false;      // Track if we've ever started playing
+let sendTimeout = null;
 
-// CONFIGURATION
-const MIN_BUFFER_SIZE = 1000;         // ~1 second of audio (1000 bytes = 500 samples @ 16kHz)
-const SAFETY_FLUSH_INTERVAL = 10;     // Send buffer if no new data for 10ms
-const MAX_BUFFER_SIZE = 320000;        // 10 seconds maximum (prevent memory overflow)
+// CONFIGURATION - OPTIMIZED FOR CONTINUOUS STREAMING
+const MIN_INITIAL_BUFFER = 48000;   // Wait for 1.5 seconds before FIRST play (smooth start)
+const CONTINUOUS_SEND_SIZE = 8192;  // After started, send every ~256ms (one packet worth)
+const SAFETY_FLUSH_INTERVAL = 50;   // Send buffer if no new data for 50ms
+const MAX_BUFFER_SIZE = 320000;     // 10 seconds maximum
 const MAX_RECONNECT_ATTEMPTS = 5;
 const RECONNECT_DELAY = 2000;
 
@@ -387,19 +393,12 @@ self.onmessage = function(e) {
         connectToSSE(url);
     } else if (e.data.command === 'disconnect') {
         gracefulShutdown();
-    } else if (e.data.command === 'playback_started') {
-        // Main thread notifies us that playback has started
-        isPlayingAudio = true;
+    } else if (e.data.command === 'reset_playback') {
+        // Allow resetting the "first play" flag if needed
+        hasStartedPlaying = false;
         self.postMessage({ 
             type: 'log', 
-            msg: '▶️ Worker: Playback started notification received' 
-        });
-    } else if (e.data.command === 'playback_stopped') {
-        // Main thread notifies us that playback has stopped
-        isPlayingAudio = false;
-        self.postMessage({ 
-            type: 'log', 
-            msg: '⏸️ Worker: Playback stopped notification received' 
+            msg: '🔄 Worker: Playback state reset' 
         });
     }
 };
@@ -427,7 +426,7 @@ function connectToSSE(url) {
             reconnectAttempts = 0;
             self.postMessage({ 
                 type: 'log', 
-                msg: "🔌 Worker: SSE Connected (Buffer-Based Queue Active)" 
+                msg: "🔌 Worker: SSE Connected (Continuous Streaming Mode)" 
             });
         };
 
@@ -451,7 +450,7 @@ function connectToSSE(url) {
 }
 
 /**
- * Queue incoming audio chunk - similar to your example
+ * Queue incoming audio chunk with smart sending logic
  */
 function queueAudioChunk(base64Audio) {
     try {
@@ -471,48 +470,42 @@ function queueAudioChunk(base64Audio) {
         // Reset reconnect counter on successful data
         reconnectAttempts = 0;
 
-        // Log buffer status
-        self.postMessage({ 
-            type: 'log', 
-            msg: `📦 Buffer: ${audioBuffer.length} bytes (need ${MIN_BUFFER_SIZE} to send), playing: ${isPlayingAudio}` 
-        });
-
-        // 3. Check if buffer overflow protection is needed
+        // 3. Buffer overflow protection
         if (audioBuffer.length > MAX_BUFFER_SIZE) {
             self.postMessage({ 
                 type: 'log', 
-                msg: `⚠️ Buffer overflow! Dropping old data. Buffer: ${audioBuffer.length} bytes` 
+                msg: `⚠️ Buffer overflow! Trimming buffer from ${audioBuffer.length} to ${MAX_BUFFER_SIZE/2}` 
             });
-            // Keep only the most recent data
-            const keep = MAX_BUFFER_SIZE / 2;
-            audioBuffer = audioBuffer.slice(audioBuffer.length - keep);
+            audioBuffer = audioBuffer.slice(audioBuffer.length - (MAX_BUFFER_SIZE / 2));
         }
 
         // 4. Clear any pending safety flush
         clearTimeout(sendTimeout);
 
-        // 5. Decide whether to send the buffer now
-        if (audioBuffer.length >= MIN_BUFFER_SIZE && !isPlayingAudio) {
-            // Buffer is large enough and not currently playing - send it!
-            self.postMessage({ 
-                type: 'log', 
-                msg: `🚀 Sending buffer (${audioBuffer.length} bytes) - threshold reached` 
-            });
-            sendBufferedAudio();
-        } else if (audioBuffer.length >= MIN_BUFFER_SIZE && isPlayingAudio) {
-            // Already playing - set safety flush in case playback stops soon
-            self.postMessage({ 
-                type: 'log', 
-                msg: `⏳ Audio already playing, chunk queued (buffer: ${audioBuffer.length} bytes)` 
-            });
-            setSafetyFlush();
+        // 5. Smart sending logic
+        if (!hasStartedPlaying) {
+            // FIRST-TIME PLAYBACK: Wait for larger buffer to ensure smooth start
+            if (audioBuffer.length >= MIN_INITIAL_BUFFER) {
+                self.postMessage({ 
+                    type: 'log', 
+                    msg: `🚀 Initial buffer ready! Sending ${audioBuffer.length} bytes` 
+                });
+                sendBufferedAudio();
+                hasStartedPlaying = true;
+            } else {
+                self.postMessage({ 
+                    type: 'log', 
+                    msg: `⏳ Initial buffering: ${audioBuffer.length}/${MIN_INITIAL_BUFFER} bytes` 
+                });
+                setSafetyFlush();
+            }
         } else {
-            // Not enough data yet - set safety flush
-            self.postMessage({ 
-                type: 'log', 
-                msg: `⏳ Buffering... (${audioBuffer.length}/${MIN_BUFFER_SIZE} bytes)` 
-            });
-            setSafetyFlush();
+            // CONTINUOUS STREAMING: Send frequently in small chunks
+            if (audioBuffer.length >= CONTINUOUS_SEND_SIZE) {
+                sendBufferedAudio();
+            } else {
+                setSafetyFlush();
+            }
         }
 
     } catch (error) {
@@ -532,9 +525,12 @@ function setSafetyFlush() {
         if (audioBuffer.length > 0) {
             self.postMessage({ 
                 type: 'log', 
-                msg: `⏰ Safety flush triggered (${audioBuffer.length} bytes after ${SAFETY_FLUSH_INTERVAL}ms silence)` 
+                msg: `⏰ Safety flush: ${audioBuffer.length} bytes (${(audioBuffer.length / 2 / 16000 * 1000).toFixed(0)}ms)` 
             });
             sendBufferedAudio();
+            if (!hasStartedPlaying) {
+                hasStartedPlaying = true;
+            }
         }
     }, SAFETY_FLUSH_INTERVAL);
 }
@@ -575,21 +571,15 @@ function sendBufferedAudio() {
         }
 
         // 3. Calculate audio duration
-        const durationMs = (float32.length / 16000 * 1000).toFixed(1);
+        const durationMs = (float32.length / 16000 * 1000).toFixed(0);
 
         // 4. Send to main thread with zero-copy transfer
         self.postMessage({ 
             type: 'data', 
             buffer: float32.buffer,
             sampleCount: float32.length,
-            byteCount: finalBytes.length,
             durationMs: parseFloat(durationMs)
         }, [float32.buffer]);
-
-        self.postMessage({ 
-            type: 'log', 
-            msg: `✅ Sent ${finalBytes.length} bytes (${float32.length} samples, ${durationMs}ms)` 
-        });
 
         // 5. Clear the buffer
         audioBuffer = new Uint8Array(0);
@@ -663,7 +653,7 @@ function gracefulShutdown() {
     leftoverByte = null;
     audioBuffer = new Uint8Array(0);
     reconnectAttempts = 0;
-    isPlayingAudio = false;
+    hasStartedPlaying = false;
 
     self.postMessage({ type: 'log', msg: "✅ Worker: Graceful shutdown complete" });
 }
