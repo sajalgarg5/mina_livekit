@@ -375,8 +375,8 @@ let isPlayingAudio = false;           // Track if audio is currently playing
 let sendTimeout = null;                // For safety flush
 
 // CONFIGURATION
-const MIN_BUFFER_SIZE = 8000;         // ~1 second of audio (8000 bytes = 4000 samples @ 16kHz)
-const SAFETY_FLUSH_INTERVAL = 100;     // Send buffer if no new data for 40ms
+const MIN_BUFFER_SIZE = 1000;         // ~1 second of audio (1000 bytes = 500 samples @ 16kHz)
+const SAFETY_FLUSH_INTERVAL = 10;     // Send buffer if no new data for 10ms
 const MAX_BUFFER_SIZE = 320000;        // 10 seconds maximum (prevent memory overflow)
 const MAX_RECONNECT_ATTEMPTS = 5;
 const RECONNECT_DELAY = 2000;
