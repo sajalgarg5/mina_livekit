@@ -153,9 +153,23 @@
         }
         update();
     }
-
+    
+    function startDelayedAudio(delayMs) {
+    log(`⏳ Waiting ${delayMs}ms before starting audio engine...`);
+    
+    setTimeout(async () => {
+        try {
+            await initAudio();
+            log("🚀 Delayed initialization complete.");
+        } catch (err) {
+            log("❌ Delayed init failed: " + err.message);
+        }
+    }, delayMs);
+}
     // Interaction is mandatory for Web Audio to start
-    window.onload = () => initAudio();
+    window.onload = () => {
+    startDelayedAudio(5000); 
+};
 </script>
 </body>
 </html>

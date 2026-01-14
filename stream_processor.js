@@ -2,7 +2,7 @@
 class StreamProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
-    this.MAX_BUFFER_SIZE = 320000; // 10 seconds of safety
+    this.MAX_BUFFER_SIZE = 640000; // 10 seconds of safety
     this.buffer = new Float32Array(this.MAX_BUFFER_SIZE);
     this.writeIndex = 0;
     this.readIndex = 0;
