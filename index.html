@@ -2,40 +2,34 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8" />
-    <title>Recall.ai Real-time Audio Agent</title>
+    <title>Recall.ai - Smooth PCM Stream</title>
     <style>
         body { display: flex; flex-direction: column; justify-content: center; align-items: center; height: 100vh; margin: 0; background: #0c0cf8; font-family: sans-serif; color: white; }
-        .status-indicator { width: 120px; height: 120px; border-radius: 50%; background-color: #82baf7; display: flex; justify-content: center; align-items: center; margin-bottom: 20px; transition: 0.1s; border: 4px solid rgba(255,255,255,0.2); }
-        .speaking { background-color: #00d2ff; box-shadow: 0 0 50px #00d2ff; transform: scale(1.05); }
-        #statusText { font-size: 18px; font-weight: bold; text-transform: uppercase; margin-bottom: 20px;}
-        canvas { width: 300px; height: 80px; background: rgba(0,0,0,0.1); border-radius: 8px; margin-bottom: 20px; }
-        #log { font-size: 11px; width: 80%; height: 80px; overflow-y: auto; background: rgba(0,0,0,0.2); padding: 10px; border-radius: 6px; font-family: monospace; }
-        .buffer-info { font-size: 10px; color: #82baf7; margin-top: 5px; }
+        .status-indicator { width: 120px; height: 120px; border-radius: 50%; background-color: #82baf7; display: flex; justify-content: center; align-items: center; margin-bottom: 20px; border: 4px solid rgba(255,255,255,0.2); transition: transform 0.1s; }
+        .speaking { background-color: #00d2ff; box-shadow: 0 0 50px #00d2ff; transform: scale(1.1); }
+        #log { font-size: 11px; width: 80%; height: 100px; overflow-y: auto; background: rgba(0,0,0,0.2); padding: 10px; border-radius: 6px; font-family: monospace; }
     </style>
 </head>
 <body>
     <div class="status-indicator" id="statusIndicator">●</div>
-    <div id="statusText">Click anywhere to start</div>
-    <canvas id="visualizer"></canvas>
+    <div id="statusText">Click to Connect</div>
     <div id="log"></div>
-    <div class="buffer-info" id="bufferStats">Buffer: 0ms</div>
 
 <script type="module">
     import { AudioAnalysis } from './audio_analysis.js';
 
-    // --- CONFIGURATION ---
     const BASE_URL = "https://tel-retreat-pure-education.trycloudflare.com"; 
-    const SAMPLE_RATE = 16000; 
-    const JITTER_BUFFER_MS = 300; // Wait for 300ms of audio before starting
-    const SAMPLES_REQUIRED = (SAMPLE_RATE * JITTER_BUFFER_MS) / 1000;
+    const SAMPLE_RATE = 16000;
+    const JITTER_BUFFER_MS = 500; // Increased to 500ms for extra safety
 
     let audioCtx = null;
     let streamNode = null;
     let analyser = null;
     
-    // Buffer State
-    let isStarted = false;
+    // --- STITCHING STATE ---
+    let leftoverByte = null; 
     let prefillBuffer = [];
+    let isPlaying = false;
 
     function log(msg) {
         const el = document.getElementById("log");
@@ -45,125 +39,75 @@
 
     async function initAudio() {
         if (audioCtx) return;
-        try {
-            audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
-            
-            // Load the Worklet
-            await audioCtx.audioWorklet.addModule('stream_processor.js');
-            streamNode = new AudioWorkletNode(audioCtx, 'stream_processor');
-
-            // Setup Analyser
-            analyser = audioCtx.createAnalyser();
-            analyser.fftSize = 2048;
-            
-            streamNode.connect(analyser);
-            analyser.connect(audioCtx.destination);
-
-            await audioCtx.resume();
-            log("✅ Audio Engine Ready. Waiting for data...");
-            document.getElementById("statusText").textContent = "Syncing Stream...";
-            
-            startVisualization();
-            connectSSE();
-        } catch (e) {
-            log("❌ Error: " + e.message);
-        }
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
+        await audioCtx.audioWorklet.addModule('stream_processor.js');
+        streamNode = new AudioWorkletNode(audioCtx, 'stream_processor');
+        analyser = audioCtx.createAnalyser();
+        streamNode.connect(analyser);
+        analyser.connect(audioCtx.destination);
+        await audioCtx.resume();
+        log("✅ System Started");
+        connectSSE();
     }
 
-    /**
-     * Decodes Base64 PCM and handles the Jitter Buffer
-     */
     function handleIncomingAudio(base64) {
         if (!streamNode) return;
 
-        try {
-            // Decode Base64
-            const binaryString = atob(base64);
-            const bytes = new Uint8Array(binaryString.length);
-            for (let i = 0; i < binaryString.length; i++) {
-                bytes[i] = binaryString.charCodeAt(i);
-            }
+        // 1. Convert Base64 to Raw Bytes
+        const binaryString = atob(base64);
+        let rawBytes = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) rawBytes[i] = binaryString.charCodeAt(i);
 
-            // Convert PCM16 to Float32
-            const dataView = new DataView(bytes.buffer);
-            const float32 = new Float32Array(Math.floor(bytes.length / 2));
-            for (let i = 0; i < float32.length; i++) {
-                float32[i] = dataView.getInt16(i * 2, true) / 32768.0;
-            }
-
-            // Jitter Buffer Logic: Prevents "breaking" due to network lag
-            if (!isStarted) {
-                for (let i = 0; i < float32.length; i++) prefillBuffer.push(float32[i]);
-                
-                const currentMs = Math.round((prefillBuffer.length / SAMPLE_RATE) * 1000);
-                document.getElementById("bufferStats").textContent = `Buffering: ${currentMs}ms / ${JITTER_BUFFER_MS}ms`;
-
-                if (prefillBuffer.length >= SAMPLES_REQUIRED) {
-                    log("🚀 Buffer ready, playing...");
-                    streamNode.port.postMessage({ 
-                        event: 'write', 
-                        buffer: new Float32Array(prefillBuffer) 
-                    });
-                    prefillBuffer = [];
-                    isStarted = true;
-                    document.getElementById("statusText").textContent = "Live Streaming";
-                }
-            } else {
-                // Buffer is already established, stream normally
-                streamNode.port.postMessage({ event: 'write', buffer: float32 });
-            }
-        } catch (err) {
-            console.error("Audio Processing Error:", err);
+        // 2. BYTE STITCHING: Handle "Split" PCM Samples
+        // If we had a leftover byte from the last packet, put it at the start
+        if (leftoverByte !== null) {
+            let newBytes = new Uint8Array(rawBytes.length + 1);
+            newBytes[0] = leftoverByte;
+            newBytes.set(rawBytes, 1);
+            rawBytes = newBytes;
+            leftoverByte = null;
         }
-    }
 
-    function startVisualization() {
-        const canvas = document.getElementById("visualizer");
-        const ctx = canvas.getContext("2d");
-        const indicator = document.getElementById("statusIndicator");
-
-        function draw() {
-            requestAnimationFrame(draw);
-            if (!analyser) return;
-
-            const data = AudioAnalysis.getFrequencies(analyser, SAMPLE_RATE, null, 'voice');
-            const values = data.values;
-
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-            const barWidth = canvas.width / values.length;
-            let vol = 0;
-
-            for (let i = 0; i < values.length; i++) {
-                const height = values[i] * canvas.height;
-                vol += values[i];
-                ctx.fillStyle = '#00d2ff';
-                ctx.fillRect(i * barWidth, canvas.height - height, barWidth - 1, height);
-            }
-
-            if ((vol / values.length) > 0.05) {
-                indicator.classList.add("speaking");
-            } else {
-                indicator.classList.remove("speaking");
-            }
+        // If this packet has an odd number of bytes, save the last one for later
+        if (rawBytes.length % 2 !== 0) {
+            leftoverByte = rawBytes[rawBytes.length - 1];
+            rawBytes = rawBytes.slice(0, rawBytes.length - 1);
         }
-        draw();
+
+        // 3. Convert to Float32
+        const dataView = new DataView(rawBytes.buffer);
+        const float32 = new Float32Array(rawBytes.length / 2);
+        for (let i = 0; i < float32.length; i++) {
+            float32[i] = dataView.getInt16(i * 2, true) / 32768.0;
+        }
+
+        // 4. JITTER BUFFERING
+        if (!isPlaying) {
+            prefillBuffer.push(...float32);
+            if (prefillBuffer.length >= (SAMPLE_RATE * (JITTER_BUFFER_MS / 1000))) {
+                streamNode.port.postMessage({ event: 'write', buffer: new Float32Array(prefillBuffer) });
+                prefillBuffer = [];
+                isPlaying = true;
+                log("🚀 Buffering complete, audio playing");
+            }
+        } else {
+            streamNode.port.postMessage({ event: 'write', buffer: float32 });
+        }
     }
 
     function connectSSE() {
         const eventSource = new EventSource(`${BASE_URL}/listen_audio`);
+        eventSource.addEventListener("audio", (e) => handleIncomingAudio(e.data));
         
-        eventSource.onopen = () => log("🔌 SSE Connected");
-
-        eventSource.addEventListener("audio", (event) => {
-            handleIncomingAudio(event.data);
-        });
-
-        eventSource.onerror = () => {
-            log("⚠️ Connection dropped. Retrying...");
-            eventSource.close();
-            isStarted = false; // Reset jitter buffer on disconnect
-            setTimeout(connectSSE, 2000);
-        };
+        // Setup visualizer
+        function draw() {
+            requestAnimationFrame(draw);
+            if (!analyser) return;
+            const data = AudioAnalysis.getFrequencies(analyser, SAMPLE_RATE, null, 'voice');
+            const vol = data.values.reduce((a, b) => a + b, 0) / data.values.length;
+            document.getElementById("statusIndicator").className = vol > 0.05 ? "status-indicator speaking" : "status-indicator";
+        }
+        draw();
     }
 
     window.onload = () => initAudio();
