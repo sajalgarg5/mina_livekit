@@ -2,267 +2,18 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8" />
-    <title>MINA AI - Real-Time Audio Stream</title>
+    <title>Recall Bot - Zero Lag Stream</title>
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        body {
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-            align-items: center;
-            height: 100vh;
-            margin: 0;
-            background: linear-gradient(135deg, #0a1628 0%, #1a3a52 50%, #2c5364 100%);
-            font-family: 'Inter', 'Segoe UI', 'Roboto', Arial, sans-serif;
-            color: #f5f7fa;
-            overflow: hidden;
-            position: relative;
-        }
-        body::before {
-            content: '';
-            position: absolute;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background: radial-gradient(circle at 20% 50%, rgba(0,210,255,0.08) 0%, transparent 50%),
-                        radial-gradient(circle at 80% 80%, rgba(58,123,213,0.06) 0%, transparent 50%);
-            pointer-events: none;
-        }
-        .status-indicator {
-            width: 140px;
-            height: 140px;
-            border-radius: 50%;
-            background: linear-gradient(135deg, #1a2332 0%, #2d3e50 100%);
-            border: 6px solid rgba(130,186,247,0.20);
-            box-shadow: 0 8px 40px 0 rgba(0,0,0,0.30), 
-                        0 0 0 0 rgba(0,210,255,0);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            position: relative;
-            transition: all 0.3s cubic-bezier(0.4,0,0.2,1);
-            animation: pulse-idle 3s ease-in-out infinite;
-            z-index: 10;
-        }
-        .status-indicator::before {
-            content: '';
-            position: absolute;
-            width: 100%;
-            height: 100%;
-            border-radius: 50%;
-            border: 2px solid rgba(0,210,255,0.3);
-            opacity: 0;
-            transition: opacity 0.3s;
-        }
-        .speaking {
-            background: linear-gradient(135deg, #00d2ff 0%, #3a7bd5 100%);
-            box-shadow: 0 8px 40px 0 rgba(0,210,255,0.4), 
-                        0 0 60px 10px rgba(0,210,255,0.25),
-                        0 0 0 12px rgba(0,210,255,0.08);
-            animation: pulse-speaking 1.5s ease-in-out infinite;
-            border-color: rgba(255,255,255,0.4);
-        }
-        .speaking::before {
-            opacity: 1;
-            animation: ripple 1.5s ease-out infinite;
-        }
-        @keyframes pulse-idle {
-            0%, 100% { transform: scale(1); }
-            50% { transform: scale(1.02); }
-        }
-        @keyframes pulse-speaking {
-            0%, 100% { transform: scale(1); }
-            50% { transform: scale(1.05); }
-        }
-        @keyframes ripple {
-            0% { transform: scale(1); opacity: 0.6; }
-            100% { transform: scale(1.8); opacity: 0; }
-        }
-        #statusText {
-            margin-top: 32px;
-            font-weight: 600;
-            color: #82baf7;
-            text-transform: uppercase;
-            letter-spacing: 3px;
-            font-size: 1.3rem;
-            text-shadow: 0 3px 12px rgba(0,0,0,0.5);
-            transition: color 0.3s, text-shadow 0.3s;
-            z-index: 10;
-        }
-        #statusText.active {
-            color: #00d2ff;
-            text-shadow: 0 0 20px rgba(0,210,255,0.6);
-        }
-        #log {
-            margin-top: 28px;
-            font-size: 13px;
-            width: 90%;
-            max-width: 800px;
-            height: 100px;
-            overflow-y: auto;
-            background: rgba(26,58,82,0.50);
-            backdrop-filter: blur(10px);
-            padding: 14px 16px;
-            border-radius: 12px;
-            border: 1px solid rgba(130,186,247,0.15);
-            font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
-            color: #b3c6e0;
-            box-shadow: 0 4px 16px 0 rgba(0,0,0,0.20), inset 0 1px 0 rgba(255,255,255,0.05);
-            z-index: 10;
-            line-height: 1.6;
-        }
-        #log::-webkit-scrollbar {
-            width: 6px;
-        }
-        #log::-webkit-scrollbar-track {
-            background: rgba(0,0,0,0.2);
-            border-radius: 3px;
-        }
-        #log::-webkit-scrollbar-thumb {
-            background: rgba(130,186,247,0.3);
-            border-radius: 3px;
-        }
-        #log::-webkit-scrollbar-thumb:hover {
-            background: rgba(130,186,247,0.5);
-        }
-        #log > div {
-            padding: 2px 0;
-            transition: background 0.2s;
-        }
-        #log > div:hover {
-            background: rgba(130,186,247,0.08);
-        }
-        .brand {
-            position: absolute;
-            top: 36px;
-            left: 40px;
-            font-size: 1.4rem;
-            color: #fff;
-            letter-spacing: 1.5px;
-            font-weight: 700;
-            user-select: none;
-            z-index: 20;
-            display: flex;
-            align-items: center;
-            gap: 12px;
-        }
-        .brand::before {
-            content: '🎙️';
-            font-size: 1.8rem;
-            filter: drop-shadow(0 0 8px rgba(0,210,255,0.5));
-        }
-        .brand-text {
-            background: linear-gradient(135deg, #00d2ff 0%, #82baf7 100%);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
-            text-shadow: 0 2px 10px rgba(0,210,255,0.3);
-        }
-        .footer {
-            position: absolute;
-            bottom: 24px;
-            right: 40px;
-            font-size: 0.9rem;
-            color: #8fa9c4;
-            opacity: 0.6;
-            user-select: none;
-            z-index: 20;
-            font-weight: 400;
-        }
-        .connection-status {
-            position: absolute;
-            top: 36px;
-            right: 40px;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            font-size: 0.9rem;
-            color: #82baf7;
-            z-index: 20;
-            padding: 8px 16px;
-            background: rgba(26,58,82,0.40);
-            backdrop-filter: blur(8px);
-            border-radius: 20px;
-            border: 1px solid rgba(130,186,247,0.20);
-        }
-        .connection-dot {
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            background: #4ade80;
-            box-shadow: 0 0 10px rgba(74,222,128,0.6);
-            animation: pulse-dot 2s ease-in-out infinite;
-        }
-        .connection-dot.disconnected {
-            background: #ef4444;
-            box-shadow: 0 0 10px rgba(239,68,68,0.6);
-            animation: none;
-        }
-        @keyframes pulse-dot {
-            0%, 100% { transform: scale(1); opacity: 1; }
-            50% { transform: scale(1.2); opacity: 0.8; }
-        }
-        .audio-metrics {
-            position: absolute;
-            bottom: 24px;
-            left: 40px;
-            display: flex;
-            gap: 24px;
-            font-size: 0.85rem;
-            color: #8fa9c4;
-            z-index: 20;
-        }
-        .metric {
-            display: flex;
-            flex-direction: column;
-            gap: 4px;
-        }
-        .metric-label {
-            opacity: 0.7;
-            font-size: 0.75rem;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-        }
-        .metric-value {
-            font-weight: 600;
-            color: #00d2ff;
-            font-size: 1rem;
-        }
-        @media (max-width: 768px) {
-            .brand { font-size: 1.1rem; left: 20px; top: 20px; }
-            .connection-status { right: 20px; top: 20px; font-size: 0.8rem; }
-            .footer, .audio-metrics { display: none; }
-            #log { font-size: 11px; height: 70px; width: 95%; }
-            .status-indicator { width: 100px; height: 100px; }
-        }
+        body { display: flex; flex-direction: column; justify-content: center; align-items: center; height: 100vh; margin: 0; background: #000022; color: white; font-family: sans-serif; overflow: hidden; }
+        .status-indicator { width: 100px; height: 100px; border-radius: 50%; background-color: #222; border: 4px solid #444; }
+        .speaking { background-color: #00d2ff; box-shadow: 0 0 30px #00d2ff; }
+        #log { margin-top: 20px; font-size: 10px; width: 90%; height: 80px; overflow-y: auto; background: rgba(0,0,0,0.4); padding: 10px; font-family: monospace; }
     </style>
 </head>
 <body>
-
-    <div class="brand"><span class="brand-text">MINA AI</span></div>
-    <div class="connection-status">
-        <div class="connection-dot" id="connectionDot"></div>
-        <span id="connectionText">Initializing</span>
-    </div>
     <div class="status-indicator" id="statusIndicator"></div>
-    <div id="statusText">System Initializing...</div>
+    <div id="statusText" style="margin-top:10px;">CPU Offloading Enabled...</div>
     <div id="log"></div>
-    <div class="audio-metrics">
-        <div class="metric">
-            <span class="metric-label">Latency</span>
-            <span class="metric-value" id="latencyValue">--ms</span>
-        </div>
-        <div class="metric">
-            <span class="metric-label">Audio Quality</span>
-            <span class="metric-value" id="qualityValue">16kHz</span>
-        </div>
-    </div>
-    <div class="footer">Powered by MINA AI &copy; 2026</div>
 
 <script type="module">
     import { AudioAnalysis } from './audio_analysis.js';
@@ -270,226 +21,97 @@
     const BASE_URL = "https://tel-retreat-pure-education.trycloudflare.com"; 
     const SAMPLE_RATE = 16000;
 
-    let audioCtx = null;
-    let streamNode = null;
-    let analyser = null;
+    let audioCtx, streamNode, analyser, decoderWorker;
     let leftoverByte = null;
-    let isProcessing = false;
-    let isConnected = false;
-    let lastAudioTime = Date.now();
-    let packetsReceived = 0;
 
     function log(msg) {
         const el = document.getElementById("log");
-        const div = document.createElement("div");
-        const now = new Date();
-        const time = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-        div.textContent = `[${time}] ${msg}`;
-        el.appendChild(div);
+        el.innerHTML += `<div>[${new Date().toLocaleTimeString()}] ${msg}</div>`;
         el.scrollTop = el.scrollHeight;
-        
-        // Keep only last 50 log entries for performance
-        while (el.children.length > 50) {
-            el.removeChild(el.firstChild);
-        }
-    }
-    
-    function updateConnectionStatus(connected) {
-        isConnected = connected;
-        const dot = document.getElementById("connectionDot");
-        const text = document.getElementById("connectionText");
-        
-        if (connected) {
-            dot.classList.remove("disconnected");
-            text.textContent = "Connected";
-        } else {
-            dot.classList.add("disconnected");
-            text.textContent = "Disconnected";
-        }
     }
 
-    /**
-     * Initializes the AudioContext. 
-     * We use async/await here to ensure the Worklet is fully loaded before continuing.
-     */
     async function initAudio() {
         if (audioCtx) return;
-        
         try {
             audioCtx = new (window.AudioContext || window.webkitAudioContext)({ 
                 sampleRate: SAMPLE_RATE,
                 latencyHint: 'playback' 
             });
 
-            // Ensure module is loaded before creating the node
-            await audioCtx.audioWorklet.addModule('stream_processor.js');
+            // 1. Setup the Web Worker for background decoding
+            decoderWorker = new Worker('decoder_worker.js');
             
+            // 2. Setup the Audio Engine
+            await audioCtx.audioWorklet.addModule('stream_processor.js');
             streamNode = new AudioWorkletNode(audioCtx, 'stream_processor');
             analyser = audioCtx.createAnalyser();
-            analyser.fftSize = 512;
+            analyser.fftSize = 256; // Extreme low CPU mode
             
             streamNode.connect(analyser);
             analyser.connect(audioCtx.destination);
-            
-            // Resume context (crucial for modern browsers)
             await audioCtx.resume();
-            
-            log("✅ Audio Worklet Thread Ready");
-            const statusText = document.getElementById("statusText");
-            statusText.textContent = "Streaming Live";
-            statusText.classList.add("active");
-            
-            // Connect to the data source
+
+            // 3. Handle data coming BACK from the worker
+            decoderWorker.onmessage = (e) => {
+                let bytes = new Uint8Array(e.data);
+                
+                // Stitch PCM alignment
+                if (leftoverByte !== null) {
+                    let stitched = new Uint8Array(bytes.length + 1);
+                    stitched[0] = leftoverByte; stitched.set(bytes, 1);
+                    bytes = stitched; leftoverByte = null;
+                }
+                if (bytes.length % 2 !== 0) {
+                    leftoverByte = bytes[bytes.length - 1];
+                    bytes = bytes.slice(0, -1);
+                }
+
+                // Rapid Float32 conversion
+                const float32 = new Float32Array(bytes.length / 2);
+                const view = new DataView(bytes.buffer);
+                for (let i = 0; i < float32.length; i++) {
+                    float32[i] = view.getInt16(i * 2, true) / 32768;
+                }
+                streamNode.port.postMessage({ event: 'write', buffer: float32 });
+            };
+
+            log("✅ Audio Engine & Worker Ready");
             connectSSE();
-            startVisualizerLoop();
-            updateMetrics();
+            startVisualizer();
         } catch (e) {
-            log("❌ Audio Engine Error: " + e.message);
-            console.error(e);
+            log("❌ Error: " + e.message);
         }
     }
 
-    /**
-     * Async handler for incoming audio packets.
-     * This prevents the SSE stream from "piling up" and breaking the voice.
-     */
-    async function handleAudioData(base64) {
-        // If we haven't set up the stream or are overloaded, return early
-        if (!streamNode) return;
-
-        // Using a microtask to ensure we don't block the main SSE event loop
-        await new Promise(resolve => setTimeout(resolve, 0));
-
-        try {
-            const binary = atob(base64);
-            let bytes = new Uint8Array(binary.length);
-            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-
-            // PCM Byte Alignment (Stitching)
-            if (leftoverByte !== null) {
-                let stitched = new Uint8Array(bytes.length + 1);
-                stitched[0] = leftoverByte;
-                stitched.set(bytes, 1);
-                bytes = stitched;
-                leftoverByte = null;
-            }
-            if (bytes.length % 2 !== 0) {
-                leftoverByte = bytes[bytes.length - 1];
-                bytes = bytes.slice(0, bytes.length - 1);
-            }
-
-            const float32 = new Float32Array(bytes.length / 2);
-            const view = new DataView(bytes.buffer);
-            for (let i = 0; i < float32.length; i++) {
-                // Divide by 32768 to normalize Int16 to Float32 [-1.0, 1.0]
-                float32[i] = view.getInt16(i * 2, true) / 32768.0;
-            }
-
-            // Post to the high-priority AudioWorklet thread
-            streamNode.port.postMessage({ event: 'write', buffer: float32 });
-            
-            // Update metrics
-            lastAudioTime = Date.now();
-            packetsReceived++;
-
-        } catch (err) {
-            console.error("PCM Processing Error:", err);
-            log("⚠️ Audio Processing Error");
-        }
-    }
-
-    /**
-     * SSE Connection.
-     */
     function connectSSE() {
         const ev = new EventSource(`${BASE_URL}/listen_audio`);
         
-        // Use an async wrapper for the event listener
-        ev.addEventListener("audio", async (e) => {
-            await handleAudioData(e.data);
+        ev.addEventListener("audio", (e) => {
+            // Simply pass the string to the worker. 
+            // The Main Thread does ZERO work here.
+            if(decoderWorker) decoderWorker.postMessage(e.data);
         });
-        
-        ev.onopen = () => {
-            log("🔌 SSE Connection Established");
-            updateConnectionStatus(true);
-        };
+
+        ev.onopen = () => log("🔌 SSE Connected");
         ev.onerror = () => {
-            log("📡 SSE Connection Lost. Reconnecting...");
-            updateConnectionStatus(false);
             ev.close();
             setTimeout(connectSSE, 2000);
         };
     }
 
-    /**
-     * Visualizer Loop.
-     */
-    function startVisualizerLoop() {
+    function startVisualizer() {
         const indicator = document.getElementById("statusIndicator");
-        const statusText = document.getElementById("statusText");
-        
-        function update() {
+        const update = () => {
             requestAnimationFrame(update);
             if (!analyser) return;
-
             const data = AudioAnalysis.getFrequencies(analyser, SAMPLE_RATE, null, 'voice');
             const vol = data.values.reduce((a, b) => a + b, 0) / data.values.length;
-            
-            if (vol > 0.04) {
-                indicator.classList.add("speaking");
-                statusText.textContent = "Voice Detected";
-            } else {
-                indicator.classList.remove("speaking");
-                statusText.textContent = "Streaming Live";
-            }
-        }
+            indicator.className = (vol > 0.04) ? "status-indicator speaking" : "status-indicator";
+        };
         update();
     }
-    
-    /**
-     * Update audio metrics periodically.
-     */
-    function updateMetrics() {
-        const latencyEl = document.getElementById("latencyValue");
-        
-        setInterval(() => {
-            // Calculate approximate latency
-            const timeSinceLastAudio = Date.now() - lastAudioTime;
-            if (timeSinceLastAudio < 5000 && isConnected) {
-                latencyEl.textContent = "~200ms";
-            } else {
-                latencyEl.textContent = "--ms";
-            }
-        }, 1000);
-    }
-    
-    /**
-     * Delayed Start Logic.
-     */
-    function startDelayedAudio(delayMs) {
-        log(`⏳ System standby: ${delayMs}ms...`);
-        updateConnectionStatus(false);
-        document.getElementById("connectionText").textContent = "Initializing";
-        
-        setTimeout(async () => {
-            log("🚀 Initializing Audio Engine...");
-            try {
-                await initAudio();
-            } catch (err) {
-                log("❌ Initialization Failed: " + err.message);
-                console.error(err);
-            }
-        }, delayMs);
-    }
 
-    // MINA Bots will trigger this automatically on load
-    window.onload = () => {
-        // 200ms delay for minimal initial buffering, as requested
-        startDelayedAudio(200); 
-    };
-
-    // Manual fallback for local testing
-    // window.onclick = () => initAudio();
+    window.onload = () => setTimeout(initAudio, 3000);
 </script>
 </body>
 </html>
