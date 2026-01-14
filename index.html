@@ -33,7 +33,6 @@
     async function initAudio() {
         if (audioCtx) return;
         try {
-            log("🚀 Initializing Multi-Threaded Audio...");
             
             // 1. Audio Context with latency priority
             audioCtx = new (window.AudioContext || window.webkitAudioContext)({ 
