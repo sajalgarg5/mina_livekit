@@ -12,7 +12,7 @@ let packetQueue = [];
 let flushTimeout = null;
 
 // CONFIGURATION
-const BATCH_SIZE = 10;      // Number of packets to group together
+const BATCH_SIZE = 15;      // Number of packets to group together
 const FLUSH_INTERVAL = 50; // Milliseconds to wait before forcing a process of partial batches
 
 self.onmessage = function(e) {
