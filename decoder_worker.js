@@ -166,6 +166,19 @@ function connectToSSE(url) {
 
                 // Add raw base64 to queue
                 packetQueue.push(event.data);
+                if (packetQueue.length % 4 === 0) {
+                    // Calculate approx duration: 
+                    // (Base64 length * 0.75) gives raw bytes. 
+                    // Divide by 2 for Int16 samples. 
+                    // Divide by 16 (for 16kHz) to get ms.
+                    const approxSamples = (event.data.length * 0.75) / 2;
+                    const durationMs = (approxSamples / 16).toFixed(1);
+
+                    self.postMessage({ 
+                        type: 'log', 
+                        msg: `📦 Queue: ${packetQueue.length} | Last Pkt: ~${durationMs}ms` 
+                    });
+                }
 
                 // Reset reconnect counter on successful data
                 reconnectAttempts = 0;
