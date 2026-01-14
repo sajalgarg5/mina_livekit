@@ -1,14 +1,27 @@
+// stream_processor.js
 class StreamProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
-    this.buffer = new Float32Array(0);
+    this.MAX_BUFFER_SIZE = 160000; // 10 seconds of safety
+    this.buffer = new Float32Array(this.MAX_BUFFER_SIZE);
+    this.writeIndex = 0;
+    this.readIndex = 0;
+    this.count = 0;
+    
+    // INCREASED MIN COUNT: 
+    // This waits for 1.5 seconds of audio before playing. 
+    // This is the ONLY way to stop breaks on a slow bot connection.
+    this.minCount = 24000; 
+    this.isPlaying = false;
+
     this.port.onmessage = (e) => {
       if (e.data.event === 'write') {
-        const newChunk = e.data.buffer;
-        const combined = new Float32Array(this.buffer.length + newChunk.length);
-        combined.set(this.buffer);
-        combined.set(newChunk, this.buffer.length);
-        this.buffer = combined;
+        const input = e.data.buffer;
+        for (let i = 0; i < input.length; i++) {
+          this.buffer[this.writeIndex] = input[i];
+          this.writeIndex = (this.writeIndex + 1) % this.MAX_BUFFER_SIZE;
+          this.count++;
+        }
       }
     };
   }
@@ -17,14 +30,27 @@ class StreamProcessor extends AudioWorkletProcessor {
     const output = outputs[0];
     const channel = output[0];
 
-    if (this.buffer.length < channel.length) {
-      return true; // Wait for more data
+    // If we haven't started yet, wait until the guard buffer is full
+    if (!this.isPlaying && this.count >= this.minCount) {
+      this.isPlaying = true;
     }
 
-    const toPlay = this.buffer.slice(0, channel.length);
-    channel.set(toPlay);
-    this.buffer = this.buffer.slice(channel.length);
-
+    if (this.isPlaying) {
+      if (this.count >= channel.length) {
+        for (let i = 0; i < channel.length; i++) {
+          channel[i] = this.buffer[this.readIndex];
+          this.readIndex = (this.readIndex + 1) % this.MAX_BUFFER_SIZE;
+          this.count--;
+        }
+      } else {
+        // UNDERFLOW: The bot/network was too slow. 
+        // We MUST stop and re-buffer to prevent "stuttering static"
+        this.isPlaying = false;
+        for (let i = 0; i < channel.length; i++) channel[i] = 0;
+      }
+    } else {
+      for (let i = 0; i < channel.length; i++) channel[i] = 0;
+    }
     return true;
   }
 }
