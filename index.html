@@ -1,195 +1,240 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8" />
-    <title>Recall Bot Audio - Async Stable Stream</title>
-    <style>
-        body { 
-            display: flex; flex-direction: column; justify-content: center; align-items: center; 
-            height: 100vh; margin: 0; background: #000033; font-family: sans-serif; color: white; 
-            overflow: hidden;
-        }
-        .status-indicator { 
-            width: 100px; height: 100px; border-radius: 50%; background-color: #333; 
-            border: 4px solid rgba(255,255,255,0.1); transition: background-color 0.2s; 
-        }
-        .speaking { background-color: #00d2ff; box-shadow: 0 0 30px #00d2ff; }
-        #statusText { margin-top: 20px; font-weight: bold; color: #82baf7; text-transform: uppercase; letter-spacing: 1px; }
-        #log { 
-            margin-top: 20px; font-size: 10px; width: 90%; height: 80px; 
-            overflow-y: auto; background: rgba(0,0,0,0.4); padding: 10px; 
-            border-radius: 5px; font-family: monospace; color: #aaa;
-        }
-    </style>
+<meta charset="UTF-8" />
+<title>Recall.ai Real-time Audio Agent</title>
+
+<style>
+body {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+    margin: 0;
+    background: #0c0cf8;
+    font-family: sans-serif;
+    color: white;
+}
+
+.status-indicator {
+    width: 150px;
+    height: 150px;
+    border-radius: 50%;
+    background-color: #82baf7;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    margin-bottom: 20px;
+    transition: 0.3s;
+}
+
+.speaking {
+    background-color: #00d2ff;
+    box-shadow: 0 0 50px #00d2ff;
+    transform: scale(1.1);
+}
+
+.icon {
+    font-size: 60px;
+}
+
+#statusText {
+    font-size: 18px;
+    font-weight: bold;
+    text-transform: uppercase;
+}
+
+#log {
+    margin-top: 20px;
+    font-size: 12px;
+    width: 80%;
+    height: 150px;
+    overflow-y: auto;
+    background: rgba(0,0,0,0.25);
+    padding: 10px;
+    border-radius: 6px;
+}
+</style>
 </head>
+
 <body>
-    <div class="status-indicator" id="statusIndicator"></div>
-    <div id="statusText">System Initializing...</div>
-    <div id="log"></div>
 
-<script type="module">
-    import { AudioAnalysis } from './audio_analysis.js';
+<div class="status-indicator" id="statusIndicator">
+    <div class="icon">●</div>
+</div>
 
-    const BASE_URL = "https://tel-retreat-pure-education.trycloudflare.com"; 
-    const SAMPLE_RATE = 16000;
+<div id="statusText">Connecting…</div>
+<div id="log"></div>
 
-    let audioCtx = null;
-    let streamNode = null;
-    let analyser = null;
-    let leftoverByte = null;
-    let isProcessing = false;
+<script>
+/* ================= CONFIG ================= */
 
-    function log(msg) {
-        const el = document.getElementById("log");
-        const div = document.createElement("div");
-        div.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
-        el.appendChild(div);
-        el.scrollTop = el.scrollHeight;
-    }
+const BASE_URL = "https://tel-retreat-pure-education.trycloudflare.com";
+const SAMPLE_RATE = 16000;
+const MIN_BUFFER_SIZE = 2048;          // ~64ms @16kHz
+const STARTUP_DELAY_MS = 200;          // warm-up delay
+const RECONNECT_DELAY_MS = 3000;
 
-    /**
-     * Initializes the AudioContext. 
-     * We use async/await here to ensure the Worklet is fully loaded before continuing.
-     */
-    async function initAudio() {
-        if (audioCtx) return;
-        
-        try {
-            audioCtx = new (window.AudioContext || window.webkitAudioContext)({ 
-                sampleRate: SAMPLE_RATE,
-                latencyHint: 'playback' 
-            });
+/* ================= STATE ================= */
 
-            // Ensure module is loaded before creating the node
-            await audioCtx.audioWorklet.addModule('stream_processor.js');
-            
-            streamNode = new AudioWorkletNode(audioCtx, 'stream_processor');
-            analyser = audioCtx.createAnalyser();
-            analyser.fftSize = 512;
-            
-            streamNode.connect(analyser);
-            analyser.connect(audioCtx.destination);
-            
-            // Resume context (crucial for modern browsers)
-            await audioCtx.resume();
-            
-            log("✅ Audio Worklet Thread Ready");
-            document.getElementById("statusText").textContent = "Streaming Live";
-            
-            // Connect to the data source
-            connectSSE();
-            startVisualizerLoop();
-        } catch (e) {
-            log("❌ Audio Engine Error: " + e.message);
-            console.error(e);
-        }
-    }
+let audioContext = null;
+let audioBuffer = new Uint8Array(0);
+let isPlaying = false;
+let playbackAllowed = false;
+let startupTimer = null;
+let eventSource = null;
 
-    /**
-     * Async handler for incoming audio packets.
-     * This prevents the SSE stream from "piling up" and breaking the voice.
-     */
-    async function handleAudioData(base64) {
-        // If we haven't set up the stream or are overloaded, return early
-        if (!streamNode) return;
+/* ================= UTIL ================= */
 
-        // Using a microtask to ensure we don't block the main SSE event loop
-        await new Promise(resolve => setTimeout(resolve, 0));
+function log(msg) {
+    const el = document.getElementById("log");
+    el.innerHTML += `[${new Date().toLocaleTimeString()}] ${msg}<br>`;
+    el.scrollTop = el.scrollHeight;
+}
 
-        try {
-            const binary = atob(base64);
-            let bytes = new Uint8Array(binary.length);
-            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+/* ================= AUDIO ================= */
 
-            // PCM Byte Alignment (Stitching)
-            if (leftoverByte !== null) {
-                let stitched = new Uint8Array(bytes.length + 1);
-                stitched[0] = leftoverByte;
-                stitched.set(bytes, 1);
-                bytes = stitched;
-                leftoverByte = null;
-            }
-            if (bytes.length % 2 !== 0) {
-                leftoverByte = bytes[bytes.length - 1];
-                bytes = bytes.slice(0, bytes.length - 1);
-            }
-
-            const float32 = new Float32Array(bytes.length / 2);
-            const view = new DataView(bytes.buffer);
-            for (let i = 0; i < float32.length; i++) {
-                // Divide by 32768 to normalize Int16 to Float32 [-1.0, 1.0]
-                float32[i] = view.getInt16(i * 2, true) / 32768.0;
-            }
-
-            // Post to the high-priority AudioWorklet thread
-            streamNode.port.postMessage({ event: 'write', buffer: float32 });
-
-        } catch (err) {
-            console.error("PCM Processing Error:", err);
-        }
-    }
-
-    /**
-     * SSE Connection.
-     */
-    function connectSSE() {
-        const ev = new EventSource(`${BASE_URL}/listen_audio`);
-        
-        // Use an async wrapper for the event listener
-        ev.addEventListener("audio", async (e) => {
-            await handleAudioData(e.data);
+async function ensureAudioContext() {
+    if (!audioContext) {
+        audioContext = new (window.AudioContext || window.webkitAudioContext)({
+            sampleRate: SAMPLE_RATE
         });
-        
-        ev.onopen = () => log("🔌 SSE Connection Established");
-        ev.onerror = () => {
-            log("📡 SSE Connection Lost. Reconnecting...");
-            ev.close();
-            setTimeout(connectSSE, 2000);
-        };
+        log("🎧 AudioContext created");
     }
+    if (audioContext.state === "suspended") {
+        await audioContext.resume();
+        log("▶️ AudioContext resumed");
+    }
+}
 
-    /**
-     * Visualizer Loop.
-     */
-    function startVisualizerLoop() {
-        const indicator = document.getElementById("statusIndicator");
-        
-        function update() {
-            requestAnimationFrame(update);
-            if (!analyser) return;
-
-            const data = AudioAnalysis.getFrequencies(analyser, SAMPLE_RATE, null, 'voice');
-            const vol = data.values.reduce((a, b) => a + b, 0) / data.values.length;
-            
-            if (vol > 0.04) {
-                indicator.classList.add("speaking");
-            } else {
-                indicator.classList.remove("speaking");
-            }
+async function queueAudioChunk(base64Audio) {
+    try {
+        const binary = atob(base64Audio);
+        const chunk = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) {
+            chunk[i] = binary.charCodeAt(i);
         }
-        update();
+
+        const merged = new Uint8Array(audioBuffer.length + chunk.length);
+        merged.set(audioBuffer);
+        merged.set(chunk, audioBuffer.length);
+        audioBuffer = merged;
+
+        if (
+            playbackAllowed &&
+            audioBuffer.length >= MIN_BUFFER_SIZE &&
+            !isPlaying
+        ) {
+            await playBufferedAudio();
+        }
+
+    } catch (err) {
+        console.error("queueAudioChunk error:", err);
     }
-    
-    /**
-     * Delayed Start Logic.
-     */
-    function startDelayedAudio(delayMs) {
-        log(`⏳ System standby: ${delayMs}ms...`);
-        
-        setTimeout(async () => {
-            log("🚀 Initializing Audio Engine...");
-            await initAudio();
-        }, delayMs);
+}
+
+async function playBufferedAudio() {
+    if (isPlaying || audioBuffer.length < MIN_BUFFER_SIZE) return;
+
+    isPlaying = true;
+    document.getElementById("statusIndicator").classList.add("speaking");
+
+    try {
+        await ensureAudioContext();
+
+        const chunkSize = Math.min(MIN_BUFFER_SIZE, audioBuffer.length);
+        const chunk = audioBuffer.slice(0, chunkSize);
+        audioBuffer = audioBuffer.slice(chunkSize);
+
+        const samples = chunk.length / 2;
+        const buffer = audioContext.createBuffer(1, samples, SAMPLE_RATE);
+        const channel = buffer.getChannelData(0);
+        const view = new DataView(chunk.buffer);
+
+        for (let i = 0; i < samples; i++) {
+            channel[i] = view.getInt16(i * 2, true) / 32768;
+        }
+
+        const source = audioContext.createBufferSource();
+        source.buffer = buffer;
+        source.connect(audioContext.destination);
+
+        source.onended = async () => {
+            isPlaying = false;
+            document.getElementById("statusIndicator").classList.remove("speaking");
+
+            if (audioBuffer.length >= MIN_BUFFER_SIZE && playbackAllowed) {
+                await playBufferedAudio();
+            }
+        };
+
+        source.start(audioContext.currentTime);
+
+    } catch (err) {
+        console.error("playBufferedAudio error:", err);
+        isPlaying = false;
+    }
+}
+
+/* ================= SSE ================= */
+
+async function connectSSE() {
+    log("🔌 Connecting SSE…");
+    document.getElementById("statusText").textContent = "Connecting…";
+
+    playbackAllowed = false;
+    if (startupTimer) clearTimeout(startupTimer);
+
+    if (eventSource) {
+        eventSource.close();
     }
 
-    // Recall Bots will trigger this automatically on load
-    window.onload = () => {
-        // 8 seconds delay as requested to let the bot environment stabilize
-        startDelayedAudio(8000); 
+    eventSource = new EventSource(`${BASE_URL}/listen_audio`);
+
+    eventSource.onopen = async () => {
+        log("✅ SSE Connected");
+        document.getElementById("statusText").textContent = "Live Streaming";
+
+        await ensureAudioContext();
+
+        startupTimer = setTimeout(() => {
+            playbackAllowed = true;
+            log("🎚 Playback enabled after warm-up");
+        }, STARTUP_DELAY_MS);
     };
 
-    // Manual fallback for local testing
-    // window.onclick = () => initAudio();
+    eventSource.addEventListener("audio", async (event) => {
+        await queueAudioChunk(event.data);
+    });
+
+    eventSource.onerror = () => {
+        log("❌ SSE error — reconnecting");
+        document.getElementById("statusText").textContent = "Reconnecting…";
+        playbackAllowed = false;
+        eventSource.close();
+        setTimeout(connectSSE, RECONNECT_DELAY_MS);
+    };
+}
+
+/* ================= USER GESTURE ================= */
+
+window.addEventListener("click", async () => {
+    await ensureAudioContext();
+});
+
+/* ================= START ================= */
+
+window.onload = async () => {
+    log("🚀 Page loaded");
+    await connectSSE();
+
+    setTimeout(() => {
+        playbackAllowed = true;
+        log("🎚 Playback enabled after delay");
+    }, 300);
+};
 </script>
+
 </body>
 </html>
