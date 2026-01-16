@@ -1,97 +1,377 @@
-<!DOCTYPE html>
-<html lang="en">
+<!-- <!DOCTYPE html>
+<html>
 <head>
-    <meta charset="UTF-8" />
-    <title>Recall Bot - Multi-Threaded Audio</title>
+    <title>Recall.ai Real-time Audio Agent</title>
     <style>
-        body { display: flex; flex-direction: column; justify-content: center; align-items: center; height: 100vh; margin: 0; background: #00001a; color: white; font-family: 'Segoe UI', sans-serif; overflow: hidden; }
-        .status-indicator { width: 120px; height: 120px; border-radius: 50%; background-color: #111; border: 4px solid #333; transition: 0.1s ease; }
-        .speaking { background-color: #00d2ff; box-shadow: 0 0 40px #00d2ff; border-color: #fff; }
-        #statusText { margin-top: 20px; font-weight: bold; letter-spacing: 2px; color: #82baf7; }
-        #log { margin-top: 20px; font-size: 11px; width: 85%; height: 100px; overflow-y: auto; background: rgba(0,0,0,0.6); padding: 10px; border-radius: 8px; font-family: 'Courier New', monospace; color: #00ff00; }
+        body { display: flex; flex-direction: column; justify-content: center; align-items: center; height: 100vh; margin: 0; background: linear-gradient(135deg, #0c0cf8 0%, #0b0beb 100%); font-family: 'Segoe UI', sans-serif; }
+        .status-indicator { width: 150px; height: 150px; border-radius: 50%; background-color: #82baf7; display: flex; justify-content: center; align-items: center; margin-bottom: 20px; transition: all 0.5s ease; box-shadow: 0 0 20px rgba(0,0,0,0.5); }
+        .status-indicator.speaking { background-color: #00d2ff; box-shadow: 0 0 50px rgba(0, 210, 255, 0.6); animation: pulse 1.5s infinite ease-in-out; }
+        @keyframes pulse { 0% { transform: scale(1); } 50% { transform: scale(1.1); } 100% { transform: scale(1); } }
+        .icon { font-size: 60px; color: white; }
+        .status-text { color: white; font-size: 24px; font-weight: 300; }
     </style>
 </head>
 <body>
-    <div class="status-indicator" id="statusIndicator"></div>
-    <div id="statusText">SYSTEM STANDBY</div>
-    <div id="log"></div>
 
-<script type="module">
-    import { AudioAnalysis } from './audio_analysis.js';
+    <div class="status-indicator idle" id="statusIndicator"><div class="icon">●</div></div>
+    <div class="status-text" id="statusText">CLICK TO START LISTENING</div>
 
-    const SSE_URL = "https://tel-retreat-pure-education.trycloudflare.com/listen_audio"; 
-    const SAMPLE_RATE = 16000;
+    <script>
+        const statusIndicator = document.getElementById('statusIndicator');
+        const statusText = document.getElementById('statusText');
 
-    let audioCtx, streamNode, analyser, decoderWorker;
+        const WS_URL = "wss://driven-emily-causing-powers.trycloudflare.com/ws/rt";
+        
+        let audioCtx;
+        let nextStartTime = 0;
 
-    function log(msg) {
-        const el = document.getElementById("log");
-        el.innerHTML += `<div>[${new Date().toLocaleTimeString()}] ${msg}</div>`;
-        el.scrollTop = el.scrollHeight;
-    }
+        // Recall.ai default PCM settings: 16kHz, Mono, 16-bit
+        const SAMPLE_RATE = 16000; 
 
-    async function initAudio() {
-        if (audioCtx) return;
-        try {
-            
-            // 1. Audio Context with latency priority
-            audioCtx = new (window.AudioContext || window.webkitAudioContext)({ 
-                sampleRate: SAMPLE_RATE,
-                latencyHint: 'playback' 
-            });
+        function init() {
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
+            const socket = new WebSocket(WS_URL);
 
-            // 2. Load the Worklet (Thread 2)
-            await audioCtx.audioWorklet.addModule('stream_processor.js');
-            streamNode = new AudioWorkletNode(audioCtx, 'stream_processor');
-            
-            analyser = audioCtx.createAnalyser();
-            analyser.fftSize = 512; // Fast visualizer, minimal CPU impact
-            
-            streamNode.connect(analyser);
-            analyser.connect(audioCtx.destination);
-            await audioCtx.resume();
+            socket.onopen = () => {
+                statusText.textContent = "CONNECTED TO RECALL.AI";
+            };
+            console.warn("WebSocket connected.");
 
-            // 3. Load the Decoder Worker (Thread 3)
-            decoderWorker = new Worker('decoder_worker.js');
-            
-            decoderWorker.onmessage = (e) => {
-                if (e.data.type === 'data') {
-                    const floatBuffer = new Float32Array(e.data.buffer);
-                    streamNode.port.postMessage({ event: 'write', buffer: floatBuffer });
-                } else if (e.data.type === 'log') {
-                    log(e.data.msg);
+            socket.onmessage = async (event) => {
+                try {
+                    const msg = JSON.parse(event.data);
+                    console.warn("Received message:", msg);
+                    
+                    // Check if this is the correct audio data event
+                    if (msg.event === "audio_mixed_raw.data") {
+                        const base64Buffer = msg.data.data.buffer;
+                        playRawPCM(base64Buffer);
+                    }
+                } catch (e) {
+                    console.error("Error parsing JSON or Audio:", e);
                 }
             };
 
-            // 4. Connect the Background Worker to the Network
-            decoderWorker.postMessage({ command: 'connect', url: SSE_URL });
-
-            document.getElementById("statusText").textContent = "STREAM ACTIVE";
-            log("✅ System ready. Audio isolated on background threads.");
-            startVisualizer();
-        } catch (e) {
-            log("❌ Init Error: " + e.message);
+            socket.onclose = () => {
+                statusText.textContent = "DISCONNECTED";
+            };
         }
-    }
 
-    function startVisualizer() {
-        const indicator = document.getElementById("statusIndicator");
-        const update = () => {
-            requestAnimationFrame(update);
-            if (!analyser) return;
-            const data = AudioAnalysis.getFrequencies(analyser, SAMPLE_RATE, null, 'voice');
-            const vol = data.values.reduce((a, b) => a + b, 0) / data.values.length;
+        function playRawPCM(base64) {
+            // 1. Decode Base64 to binary
+            const binaryString = window.atob(base64);
+            const len = binaryString.length;
+            const bytes = new Int16Array(len / 2); // 16-bit audio uses 2 bytes per sample
+
+            // 2. Convert to 16-bit Integers
+            const dataView = new DataView(new Uint8Array(Array.from(binaryString, c => c.charCodeAt(0))).buffer);
+            for (let i = 0; i < bytes.length; i++) {
+                bytes[i] = dataView.getInt16(i * 2, true); // true for little-endian
+            }
+
+            // 3. Convert Int16 to Float32 (required by Web Audio API)
+            const float32Data = new Float32Array(bytes.length);
+            for (let i = 0; i < bytes.length; i++) {
+                float32Data[i] = bytes[i] / 32768; // Normalize to [-1.0, 1.0]
+            }
+
+            // 4. Create and play the buffer
+            const audioBuffer = audioCtx.createBuffer(1, float32Data.length, SAMPLE_RATE);
+            audioBuffer.getChannelData(0).set(float32Data);
+
+            const source = audioCtx.createBufferSource();
+            source.buffer = audioBuffer;
+            source.connect(audioCtx.destination);
+
+            // Scheduling logic to prevent gaps
+            const currentTime = audioCtx.currentTime;
+            if (nextStartTime < currentTime) {
+                nextStartTime = currentTime;
+            }
+
+            source.start(nextStartTime);
+            nextStartTime += audioBuffer.duration;
+
+            // Visual State
+            setVisualState('speaking');
+            source.onended = () => {
+                if (audioCtx.currentTime >= nextStartTime - 0.1) {
+                    setVisualState('idle');
+                }
+            };
+        }
+
+        function setVisualState(state) {
+            if (state === 'speaking') {
+                statusIndicator.className = 'status-indicator speaking';
+                statusIndicator.innerHTML = '<div class="icon">🎤</div>';
+            } else {
+                statusIndicator.className = 'status-indicator idle';
+                statusIndicator.innerHTML = '<div class="icon">●</div>';
+            }
+        }
+
+        // function tryConnectWhenVisible() {
+        // if (document.visibilityState === "visible") {
+        //     init();
+        // } else {
+        //     document.addEventListener("visibilitychange", function onVis() {
+        //         if (document.visibilityState === "visible") {
+        //             document.removeEventListener("visibilitychange", onVis);
+        //             init();
+        //         }
+        //     });
+        // }
+        // }
+
+        // window.onload = tryConnectWhenVisible;
+
+        // window.onload = () => { init(); };
+        window.onload = init;
+    </script>
+</body>
+</html> -->
+
+
+
+
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Recall.ai Real-time Audio Agent</title>
+    <style>
+        body { display: flex; flex-direction: column; justify-content: center; align-items: center; height: 100vh; margin: 0; background: linear-gradient(135deg, #0c0cf8 0%, #0b0beb 100%); font-family: 'Segoe UI', sans-serif; }
+        .status-indicator { width: 150px; height: 150px; border-radius: 50%; background-color: #82baf7; display: flex; justify-content: center; align-items: center; margin-bottom: 20px; transition: all 0.5s ease; box-shadow: 0 0 20px rgba(0,0,0,0.5); }
+        .status-indicator.speaking { background-color: #00d2ff; box-shadow: 0 0 50px rgba(0, 210, 255, 0.6); animation: pulse 1.5s infinite ease-in-out; }
+        .status-indicator.connected { background-color: #00ff00; }
+        .status-indicator.error { background-color: #ff0000; }
+        @keyframes pulse { 0% { transform: scale(1); } 50% { transform: scale(1.1); } 100% { transform: scale(1); } }
+        .icon { font-size: 60px; color: white; }
+        .status-text { color: white; font-size: 24px; font-weight: 300; margin-bottom: 10px; }
+        .debug-log { color: white; font-size: 12px; max-width: 600px; text-align: center; opacity: 0.8; }
+    </style>
+</head>
+<body>
+
+    <div class="status-indicator idle" id="statusIndicator"><div class="icon">●</div></div>
+    <div class="status-text" id="statusText">INITIALIZING...</div>
+    <div class="debug-log" id="debugLog"></div>
+
+    <script>
+        const statusIndicator = document.getElementById('statusIndicator');
+        const statusText = document.getElementById('statusText');
+        const debugLog = document.getElementById('debugLog');
+
+        const WS_URL = "wss://driven-emily-causing-powers.trycloudflare.com/ws/rt";
+        
+        let audioCtx;
+        let nextStartTime = 0;
+        let socket;
+        let messageCount = 0;
+        let audioChunkCount = 0;
+
+        // Recall.ai default PCM settings: 16kHz, Mono, 16-bit
+        const SAMPLE_RATE = 16000;
+
+        function log(message) {
+            console.log(`[${new Date().toISOString()}] ${message}`);
+            debugLog.textContent = `${message}\n${debugLog.textContent}`.substring(0, 500);
+        }
+
+        function setStatus(text, indicatorClass) {
+            statusText.textContent = text;
+            statusIndicator.className = `status-indicator ${indicatorClass}`;
+        }
+
+        async function init() {
+            log("🚀 Initializing...");
+            log(`📍 Visibility: ${document.visibilityState}`);
+            log(`🖼️ In iframe: ${window.self !== window.top}`);
             
-            if (vol > 0.04) indicator.classList.add("speaking");
-            else indicator.classList.remove("speaking");
-        };
-        update();
-    }
+            try {
+                // Create AudioContext
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
+                log(`🔊 AudioContext created: ${audioCtx.state}`);
+                
+                // Resume AudioContext if suspended (for autoplay policies)
+                if (audioCtx.state === 'suspended') {
+                    await audioCtx.resume();
+                    log(`▶️ AudioContext resumed: ${audioCtx.state}`);
+                }
+                
+                connectWebSocket();
+            } catch (error) {
+                log(`❌ Init error: ${error.message}`);
+                setStatus("INITIALIZATION FAILED", "error");
+            }
+        }
 
-    // Delay start by 1 second to let the Recall Bot browser stabilize
-    window.onload = () => {
-        initAudio();
-    };
-</script>
+        function connectWebSocket() {
+            log(`🔌 Connecting to ${WS_URL}...`);
+            setStatus("CONNECTING...", "idle");
+            
+            socket = new WebSocket(WS_URL);
+
+            socket.onopen = () => {
+                log("✅ WebSocket connected!");
+                setStatus("CONNECTED - LISTENING", "connected");
+                statusIndicator.innerHTML = '<div class="icon">✓</div>';
+            };
+
+            socket.onmessage = async (event) => {
+                messageCount++;
+                
+                // Handle binary data (decoded PCM)
+                if (event.data instanceof Blob || event.data instanceof ArrayBuffer) {
+                    log(`📦 Binary message received (#${messageCount})`);
+                    // Handle binary PCM data here if needed
+                    return;
+                }
+                
+                // Handle text/JSON data
+                try {
+                    const msg = JSON.parse(event.data);
+                    log(`📨 Message #${messageCount}: ${msg.event}`);
+                    
+                    // Check if this is audio data
+                    if (msg.event === "audio_mixed_raw.data") {
+                        audioChunkCount++;
+                        const base64Buffer = msg.data.data.buffer;
+                        log(`🎵 Playing audio chunk #${audioChunkCount}`);
+                        await playRawPCM(base64Buffer);
+                    }
+                } catch (e) {
+                    log(`⚠️ Error parsing message: ${e.message}`);
+                    console.error("Full error:", e);
+                }
+            };
+
+            socket.onerror = (error) => {
+                log(`❌ WebSocket error: ${error.type}`);
+                setStatus("CONNECTION ERROR", "error");
+            };
+
+            socket.onclose = (event) => {
+                log(`🔌 WebSocket closed (code: ${event.code}, reason: ${event.reason || 'none'})`);
+                setStatus("DISCONNECTED", "error");
+                statusIndicator.innerHTML = '<div class="icon">✗</div>';
+                
+                // Auto-reconnect after 3 seconds
+                setTimeout(() => {
+                    log("🔄 Attempting to reconnect...");
+                    connectWebSocket();
+                }, 3000);
+            };
+        }
+
+        async function playRawPCM(base64) {
+            try {
+                // Resume AudioContext if needed
+                if (audioCtx.state === 'suspended') {
+                    await audioCtx.resume();
+                }
+
+                // 1. Decode Base64 to binary
+                const binaryString = window.atob(base64);
+                const len = binaryString.length;
+                const bytes = new Int16Array(len / 2);
+
+                // 2. Convert to 16-bit Integers
+                const dataView = new DataView(new Uint8Array(Array.from(binaryString, c => c.charCodeAt(0))).buffer);
+                for (let i = 0; i < bytes.length; i++) {
+                    bytes[i] = dataView.getInt16(i * 2, true);
+                }
+
+                // 3. Convert Int16 to Float32
+                const float32Data = new Float32Array(bytes.length);
+                for (let i = 0; i < bytes.length; i++) {
+                    float32Data[i] = bytes[i] / 32768;
+                }
+
+                // 4. Create and play the buffer
+                const audioBuffer = audioCtx.createBuffer(1, float32Data.length, SAMPLE_RATE);
+                audioBuffer.getChannelData(0).set(float32Data);
+
+                const source = audioCtx.createBufferSource();
+                source.buffer = audioBuffer;
+                source.connect(audioCtx.destination);
+
+                // Scheduling logic to prevent gaps
+                const currentTime = audioCtx.currentTime;
+                if (nextStartTime < currentTime) {
+                    nextStartTime = currentTime;
+                }
+
+                source.start(nextStartTime);
+                nextStartTime += audioBuffer.duration;
+
+                // Visual State
+                setVisualState('speaking');
+                source.onended = () => {
+                    if (audioCtx.currentTime >= nextStartTime - 0.1) {
+                        setVisualState('idle');
+                    }
+                };
+            } catch (error) {
+                log(`❌ Playback error: ${error.message}`);
+            }
+        }
+
+        function setVisualState(state) {
+            if (state === 'speaking') {
+                statusIndicator.className = 'status-indicator speaking';
+                statusIndicator.innerHTML = '<div class="icon">🎤</div>';
+            } else {
+                statusIndicator.className = 'status-indicator connected';
+                statusIndicator.innerHTML = '<div class="icon">✓</div>';
+            }
+        }
+
+        // Handle visibility changes (for iframe/background scenarios)
+        document.addEventListener('visibilitychange', () => {
+            log(`👁️ Visibility changed: ${document.visibilityState}`);
+            if (document.visibilityState === 'visible' && (!socket || socket.readyState !== WebSocket.OPEN)) {
+                log("🔄 Page became visible, reconnecting...");
+                connectWebSocket();
+            }
+        });
+
+        // Aggressive auto-start - NO USER INTERACTION REQUIRED
+        function startWhenReady() {
+            log("✓ Auto-starting immediately, no user interaction needed");
+            init();
+        }
+
+        // Multiple start triggers for maximum compatibility
+        
+        // 1. Start immediately if DOM is ready
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', startWhenReady);
+        } else {
+            // DOM already loaded, start NOW
+            startWhenReady();
+        }
+        
+        // 2. Also start on window load (backup)
+        window.addEventListener('load', () => {
+            if (!socket || socket.readyState !== WebSocket.OPEN) {
+                log("🔄 Window loaded, ensuring connection...");
+                startWhenReady();
+            }
+        });
+
+        // 3. Force resume AudioContext on any interaction (fallback for browser autoplay policies)
+        const forceResumeAudio = () => {
+            if (audioCtx && audioCtx.state === 'suspended') {
+                log("👆 Interaction detected, forcing audio resume...");
+                audioCtx.resume().then(() => {
+                    log("✅ AudioContext force-resumed");
+                });
+            }
+        };
+        // document.addEventListener('click', forceResumeAudio, { once: true });
+        // document.addEventListener('touchstart', forceResumeAudio, { once: true });
+        // document.addEventListener('keydown', forceResumeAudio, { once: true });
+    </script>
 </body>
 </html>
