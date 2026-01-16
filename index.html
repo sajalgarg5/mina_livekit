@@ -1,172 +1,246 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Mina AI - Audio Receiver</title>
+    <title>Recall.ai Real-time Audio Agent</title>
     <style>
-        body { 
-            margin: 0; background: #0a0a23; font-family: 'Courier New', monospace; 
-            color: #00ff00; display: flex; flex-direction: column; height: 100vh;
+        body {
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            background: linear-gradient(135deg, #0c0cf8 0%, #0b0beb 100%);
+            font-family: 'Segoe UI', sans-serif;
+            color: white;
         }
-        #header { padding: 20px; border-bottom: 1px solid #00ff00; display: flex; justify-content: space-between; }
-        #log-container { 
-            flex-grow: 1; overflow-y: auto; padding: 20px; font-size: 14px; line-height: 1.4;
-            display: flex; flex-direction: column-reverse; /* Newest logs at top */
+
+        .status-indicator {
+            width: 120px;
+            height: 120px;
+            border-radius: 50%;
+            background-color: #82baf7;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            margin-bottom: 10px;
+            transition: all 0.4s ease;
         }
-        .log-entry { margin-bottom: 5px; border-left: 3px solid #00ff00; padding-left: 10px; }
-        .log-entry.error { border-color: #ff0000; color: #ff0000; }
-        .log-entry.audio { border-color: #00d2ff; color: #00d2ff; }
-        
-        #overlay {
-            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-            background: rgba(10, 10, 35, 0.95); display: flex; justify-content: center;
-            align-items: center; z-index: 100;
+
+        .speaking {
+            background-color: #00d2ff;
+            box-shadow: 0 0 30px #00d2ff;
         }
-        button {
-            padding: 20px 40px; font-size: 24px; background: #00ff00; color: #000;
-            border: none; cursor: pointer; font-family: inherit; font-weight: bold;
+
+        .connected {
+            background-color: #00ff88;
         }
-        #vitals { font-size: 12px; color: #888; }
+
+        .error {
+            background-color: #ff4d4d;
+        }
+
+        .icon {
+            font-size: 50px;
+        }
+
+        #statusText {
+            font-size: 18px;
+            margin-bottom: 10px;
+        }
+
+        #logBox {
+            width: 90%;
+            max-width: 800px;
+            height: 260px;
+            background: rgba(0,0,0,0.35);
+            border-radius: 6px;
+            padding: 10px;
+            font-size: 12px;
+            overflow-y: auto;
+            text-align: left;
+        }
     </style>
 </head>
 <body>
 
-    <div id="overlay">
-        <button id="startBtn">INITIALIZE MINA AUDIO</button>
-    </div>
+<div class="status-indicator" id="statusIndicator">
+    <div class="icon">●</div>
+</div>
+<div id="statusText">INITIALIZING…</div>
+<div id="logBox"></div>
 
-    <div id="header">
-        <div>STATUS: <span id="ws-status">DISCONNECTED</span></div>
-        <div id="vitals">PACKETS: <span id="pkt-count">0</span> | LATENCY: <span id="latency">--</span>ms</div>
-    </div>
+<script>
+/* ===================== CONFIG ===================== */
+const WS_URL = "wss://anyone-gordon-expansys-generations.trycloudflare.com/ws/rt";
+const SAMPLE_RATE = 16000;
 
-    <div id="log-container" id="logs">
-        </div>
+/* ===================== STATE ===================== */
+let audioCtx;
+let nextStartTime = 0;
+let socket;
+let totalMessages = 0;
+let audioPackets = 0;
 
-    <script>
-        const WS_URL = "wss://anyone-gordon-expansys-generations.trycloudflare.com/ws/rt";
-        const SAMPLE_RATE = 16000;
-        
-        let audioCtx;
-        let nextStartTime = 0;
-        let socket;
-        let pktCount = 0;
+/* ===================== UI HELPERS ===================== */
+const statusIndicator = document.getElementById("statusIndicator");
+const statusText = document.getElementById("statusText");
+const logBox = document.getElementById("logBox");
 
-        const startBtn = document.getElementById('startBtn');
-        const overlay = document.getElementById('overlay');
-        const logContainer = document.getElementById('log-container');
-        const wsStatus = document.getElementById('ws-status');
-        const pktDisplay = document.getElementById('pkt-count');
+function log(msg) {
+    const line = `[${new Date().toLocaleTimeString()}] ${msg}`;
+    logBox.innerHTML += line + "<br>";
+    logBox.scrollTop = logBox.scrollHeight;
+}
 
-        function screenLog(msg, type = '') {
-            const div = document.createElement('div');
-            div.className = `log-entry ${type}`;
-            div.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
-            logContainer.prepend(div);
+function setStatus(text, cls, icon = "●") {
+    statusText.textContent = text;
+    statusIndicator.className = `status-indicator ${cls || ""}`;
+    statusIndicator.innerHTML = `<div class="icon">${icon}</div>`;
+}
+
+/* ===================== INIT ===================== */
+async function init() {
+    log("🚀 init() called");
+    log(`🌍 Visibility: ${document.visibilityState}`);
+
+    try {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)({
+            sampleRate: SAMPLE_RATE
+        });
+
+        log(`🔊 AudioContext state: ${audioCtx.state}`);
+
+        if (audioCtx.state === "suspended") {
+            await audioCtx.resume();
+            log("▶️ AudioContext resumed");
         }
 
-        // AUTO-START ATTEMPT
-        window.onload = () => {
-            screenLog("System loaded. Waiting for user to unlock AudioContext...");
+        connectWebSocket();
+
+    } catch (err) {
+        log(`❌ Init error: ${err.message}`);
+        setStatus("INIT FAILED", "error", "✗");
+    }
+}
+
+/* ===================== WEBSOCKET ===================== */
+function connectWebSocket() {
+    log(`🔌 Connecting WebSocket → ${WS_URL}`);
+    setStatus("CONNECTING…", "", "●");
+
+    socket = new WebSocket(WS_URL);
+
+    socket.onopen = () => {
+        log("✅ WebSocket OPEN");
+        setStatus("CONNECTED", "connected", "✓");
+    };
+
+    socket.onmessage = async (event) => {
+        totalMessages++;
+
+        log(`📨 WS message #${totalMessages} received`);
+
+        if (typeof event.data !== "string") {
+            log("⚠️ Non-text WS message ignored");
+            return;
+        }
+
+        let msg;
+        try {
+            msg = JSON.parse(event.data);
+        } catch (e) {
+            log("❌ JSON parse failed");
+            return;
+        }
+
+        log(`📄 Event type: ${msg.event || "unknown"}`);
+
+        if (msg.event === "audio_mixed_raw.data") {
+            audioPackets++;
+            const base64Buffer = msg?.data?.data?.buffer;
+
+            if (!base64Buffer) {
+                log("⚠️ Audio packet missing buffer");
+                return;
+            }
+
+            log(`🎵 Audio packet #${audioPackets}, size=${base64Buffer.length}`);
+            await playRawPCM(base64Buffer);
+        }
+    };
+
+    socket.onerror = () => {
+        log("❌ WebSocket ERROR");
+        setStatus("WS ERROR", "error", "✗");
+    };
+
+    socket.onclose = (e) => {
+        log(`🔌 WS CLOSED (code=${e.code})`);
+        setStatus("DISCONNECTED", "error", "✗");
+
+        setTimeout(() => {
+            log("🔄 Reconnecting WebSocket…");
+            connectWebSocket();
+        }, 3000);
+    };
+}
+
+/* ===================== AUDIO ===================== */
+async function playRawPCM(base64) {
+    try {
+        if (audioCtx.state === "suspended") {
+            await audioCtx.resume();
+        }
+
+        const binary = atob(base64);
+        const len = binary.length;
+        const bytes = new Int16Array(len / 2);
+        const view = new DataView(
+            new Uint8Array([...binary].map(c => c.charCodeAt(0))).buffer
+        );
+
+        for (let i = 0; i < bytes.length; i++) {
+            bytes[i] = view.getInt16(i * 2, true);
+        }
+
+        const floats = new Float32Array(bytes.length);
+        for (let i = 0; i < bytes.length; i++) {
+            floats[i] = bytes[i] / 32768;
+        }
+
+        const buffer = audioCtx.createBuffer(1, floats.length, SAMPLE_RATE);
+        buffer.getChannelData(0).set(floats);
+
+        const source = audioCtx.createBufferSource();
+        source.buffer = buffer;
+        source.connect(audioCtx.destination);
+
+        const now = audioCtx.currentTime;
+        if (nextStartTime < now) nextStartTime = now;
+
+        source.start(nextStartTime);
+        nextStartTime += buffer.duration;
+
+        setStatus("PLAYING AUDIO", "speaking", "🎤");
+
+        source.onended = () => {
+            if (audioCtx.currentTime >= nextStartTime - 0.1) {
+                setStatus("CONNECTED", "connected", "✓");
+            }
         };
 
-        startBtn.onclick = async () => {
-            overlay.style.display = 'none';
-            await initAudio();
-            connect();
-        };
+    } catch (err) {
+        log(`❌ Audio error: ${err.message}`);
+    }
+}
 
-        async function initAudio() {
-            try {
-                audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
-                if (audioCtx.state === 'suspended') await audioCtx.resume();
-                screenLog("🔊 Audio System Online (" + SAMPLE_RATE + "Hz)");
-            } catch (e) {
-                screenLog("FAILED TO INIT AUDIO: " + e.message, "error");
-            }
-        }
+/* ===================== START ===================== */
+window.onload = async () => {
+    log("🧠 window.onload fired");
+    await init();
+};
+</script>
 
-        function connect() {
-            screenLog("🔌 Connecting to WebSocket...");
-            wsStatus.textContent = "CONNECTING...";
-            wsStatus.style.color = "orange";
-
-            socket = new WebSocket(WS_URL);
-
-            socket.onopen = () => {
-                wsStatus.textContent = "CONNECTED";
-                wsStatus.style.color = "#00ff00";
-                screenLog("✅ WebSocket Connected Successfully");
-            };
-
-            socket.onmessage = async (event) => {
-                try {
-                    const msg = JSON.parse(event.data);
-                    
-                    // Specific check for the Recall.ai event structure
-                    if (msg.event === "audio_mixed_raw.data") {
-                        pktCount++;
-                        pktDisplay.textContent = pktCount;
-                        
-                        // Log every 10th packet to keep screen clean but show activity
-                        if (pktCount % 10 === 0) {
-                            screenLog(`🎵 Stream Active: Received ${pktCount} audio chunks`, "audio");
-                        }
-
-                        if (msg.data && msg.data.data && msg.data.data.buffer) {
-                            playPCM(msg.data.data.buffer);
-                        }
-                    } else {
-                        screenLog("📩 Received Event: " + (msg.event || "unknown"));
-                    }
-                } catch (e) {
-                    screenLog("Data error: " + e.message, "error");
-                }
-            };
-
-            socket.onclose = () => {
-                wsStatus.textContent = "DISCONNECTED";
-                wsStatus.style.color = "red";
-                screenLog("🔌 Connection Closed. Retrying in 3s...", "error");
-                setTimeout(connect, 3000);
-            };
-
-            socket.onerror = (err) => {
-                screenLog("WS Error: Check console for details", "error");
-            };
-        }
-
-        function playPCM(base64) {
-            // Decode Base64 to ArrayBuffer
-            const binary = atob(base64);
-            const buffer = new Int16Array(binary.length / 2);
-            const view = new DataView(new Uint8Array(Array.from(binary, c => c.charCodeAt(0))).buffer);
-
-            for (let i = 0; i < buffer.length; i++) {
-                buffer[i] = view.getInt16(i * 2, true); // true for little-endian
-            }
-
-            // Convert Int16 to Float32 for Web Audio API
-            const float32 = new Float32Array(buffer.length);
-            for (let i = 0; i < buffer.length; i++) {
-                float32[i] = buffer[i] / 32768;
-            }
-
-            const audioBuffer = audioCtx.createBuffer(1, float32.length, SAMPLE_RATE);
-            audioBuffer.getChannelData(0).set(float32);
-
-            const source = audioCtx.createBufferSource();
-            source.buffer = audioBuffer;
-            source.connect(audioCtx.destination);
-
-            // Time scheduling for gapless playback
-            const currentTime = audioCtx.currentTime;
-            if (nextStartTime < currentTime) {
-                nextStartTime = currentTime;
-            }
-            
-            source.start(nextStartTime);
-            nextStartTime += audioBuffer.duration;
-        }
-    </script>
 </body>
 </html>
