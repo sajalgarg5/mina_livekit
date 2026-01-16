@@ -53,7 +53,8 @@
 
 <script>
 /* ===================== CONFIG ===================== */
-const WS_URL = "wss://connect-dev.getello.ai/ws-ello";
+// const WS_URL = "wss://connect-dev.getello.ai/ws-ello";
+const WS_URL = "wss://anyone-gordon-expansys-generations.trycloudflare.com/ws/rt";
 const CONVERSATION_ID = "696a0d00269b9417e249745e"; // Put your ID here
 const SAMPLE_RATE = 16000;
 
@@ -111,12 +112,12 @@ function connectWebSocket() {
         setStatus("CONNECTED", "connected", "✓");
 
         // Logic from your Python 'sender': Send session start immediately
-        const startSessionMsg = {
-            "type": "voice-session-start",
-            "conversation_id": CONVERSATION_ID
-        };
-        socket.send(JSON.stringify(startSessionMsg));
-        log(`📤 Sent voice-session-start for ID: ${CONVERSATION_ID}`);
+        // const startSessionMsg = {
+        //     "type": "voice-session-start",
+        //     "conversation_id": CONVERSATION_ID
+        // };
+        // socket.send(JSON.stringify(startSessionMsg));
+        // log(`📤 Sent voice-session-start for ID: ${CONVERSATION_ID}`);
     };
 
     socket.onmessage = async (event) => {
@@ -129,9 +130,9 @@ function connectWebSocket() {
 
         // Logic from your Python 'receiver':
         // Specifically check for "voice-audio-output"
-        if (msg.type === "voice-audio-output") {
+        if (msg.event === "audio_mixed_raw.data") {
             audioPackets++;
-            const base64Audio = msg.audio; // ElLo sends audio in the 'audio' field
+            const base64Audio = msg.data?.data?.buffer; // ElLo sends audio in the 'audio' field
 
             if (base64Audio) {
                 if (audioPackets % 10 === 0) log(`🎵 Received audio packet #${audioPackets}`);
@@ -139,7 +140,7 @@ function connectWebSocket() {
             }
         } else {
             // Log other messages like metadata/transcripts
-            log(`ℹ️ Received: ${msg.type}`);
+            log(`ℹ️ Received: ${msg.event || "unknown event"}`);
         }
     };
 
