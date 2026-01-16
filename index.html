@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Recall.ai Real-time Audio Agent</title>
+    <title>Recall.ai + ElLo Agent</title>
     <style>
         body {
             display: flex;
@@ -14,7 +14,6 @@
             font-family: 'Segoe UI', sans-serif;
             color: white;
         }
-
         .status-indicator {
             width: 120px;
             height: 120px;
@@ -26,29 +25,11 @@
             margin-bottom: 10px;
             transition: all 0.4s ease;
         }
-
-        .speaking {
-            background-color: #00d2ff;
-            box-shadow: 0 0 30px #00d2ff;
-        }
-
-        .connected {
-            background-color: #00ff88;
-        }
-
-        .error {
-            background-color: #ff4d4d;
-        }
-
-        .icon {
-            font-size: 50px;
-        }
-
-        #statusText {
-            font-size: 18px;
-            margin-bottom: 10px;
-        }
-
+        .speaking { background-color: #00d2ff; box-shadow: 0 0 30px #00d2ff; }
+        .connected { background-color: #00ff88; }
+        .error { background-color: #ff4d4d; }
+        .icon { font-size: 50px; }
+        #statusText { font-size: 18px; margin-bottom: 10px; }
         #logBox {
             width: 90%;
             max-width: 800px;
@@ -72,14 +53,14 @@
 
 <script>
 /* ===================== CONFIG ===================== */
-const WS_URL = "wss://anyone-gordon-expansys-generations.trycloudflare.com/ws/rt";
+const WS_URL = "wss://connect-dev.getello.ai/ws-ello";
+const CONVERSATION_ID = "696a0b29269b9417e249744c"; // Put your ID here
 const SAMPLE_RATE = 16000;
 
 /* ===================== STATE ===================== */
 let audioCtx;
 let nextStartTime = 0;
 let socket;
-let totalMessages = 0;
 let audioPackets = 0;
 
 /* ===================== UI HELPERS ===================== */
@@ -101,23 +82,17 @@ function setStatus(text, cls, icon = "●") {
 
 /* ===================== INIT ===================== */
 async function init() {
-    log("🚀 init() called");
-    log(`🌍 Visibility: ${document.visibilityState}`);
-
+    log("🚀 Initializing Audio...");
     try {
         audioCtx = new (window.AudioContext || window.webkitAudioContext)({
             sampleRate: SAMPLE_RATE
         });
 
-        log(`🔊 AudioContext state: ${audioCtx.state}`);
-
         if (audioCtx.state === "suspended") {
             await audioCtx.resume();
-            log("▶️ AudioContext resumed");
         }
 
         connectWebSocket();
-
     } catch (err) {
         log(`❌ Init error: ${err.message}`);
         setStatus("INIT FAILED", "error", "✗");
@@ -126,7 +101,7 @@ async function init() {
 
 /* ===================== WEBSOCKET ===================== */
 function connectWebSocket() {
-    log(`🔌 Connecting WebSocket → ${WS_URL}`);
+    log(`🔌 Connecting to ElLo WS...`);
     setStatus("CONNECTING…", "", "●");
 
     socket = new WebSocket(WS_URL);
@@ -134,76 +109,72 @@ function connectWebSocket() {
     socket.onopen = () => {
         log("✅ WebSocket OPEN");
         setStatus("CONNECTED", "connected", "✓");
+
+        // Logic from your Python 'sender': Send session start immediately
+        const startSessionMsg = {
+            "type": "voice-session-start",
+            "conversation_id": CONVERSATION_ID
+        };
+        socket.send(JSON.stringify(startSessionMsg));
+        log(`📤 Sent voice-session-start for ID: ${CONVERSATION_ID}`);
     };
 
     socket.onmessage = async (event) => {
-        totalMessages++;
-
-        log(`📨 WS message #${totalMessages} received`);
-
-        if (typeof event.data !== "string") {
-            log("⚠️ Non-text WS message ignored");
-            return;
-        }
-
         let msg;
         try {
             msg = JSON.parse(event.data);
         } catch (e) {
-            log("❌ JSON parse failed");
             return;
         }
 
-        log(`📄 Event type: ${msg.event || "unknown"}`);
-
-        if (msg.event === "audio_mixed_raw.data") {
+        // Logic from your Python 'receiver':
+        // Specifically check for "voice-audio-output"
+        if (msg.type === "voice-audio-output") {
             audioPackets++;
-            const base64Buffer = msg?.data?.data?.buffer;
+            const base64Audio = msg.audio; // ElLo sends audio in the 'audio' field
 
-            if (!base64Buffer) {
-                log("⚠️ Audio packet missing buffer");
-                return;
+            if (base64Audio) {
+                if (audioPackets % 10 === 0) log(`🎵 Received audio packet #${audioPackets}`);
+                await playRawPCM(base64Audio);
             }
-
-            log(`🎵 Audio packet #${audioPackets}, size=${base64Buffer.length}`);
-            await playRawPCM(base64Buffer);
+        } else {
+            // Log other messages like metadata/transcripts
+            log(`ℹ️ Received: ${msg.type}`);
         }
     };
 
-    socket.onerror = () => {
+    socket.onerror = (err) => {
         log("❌ WebSocket ERROR");
         setStatus("WS ERROR", "error", "✗");
     };
 
     socket.onclose = (e) => {
-        log(`🔌 WS CLOSED (code=${e.code})`);
+        log(`🔌 WS CLOSED (code=${e.code}). Reconnecting in 3s...`);
         setStatus("DISCONNECTED", "error", "✗");
-
-        setTimeout(() => {
-            log("🔄 Reconnecting WebSocket…");
-            connectWebSocket();
-        }, 3000);
+        setTimeout(connectWebSocket, 3000);
     };
 }
 
-/* ===================== AUDIO ===================== */
+/* ===================== AUDIO PLAYBACK ===================== */
 async function playRawPCM(base64) {
     try {
-        if (audioCtx.state === "suspended") {
-            await audioCtx.resume();
-        }
+        if (audioCtx.state === "suspended") await audioCtx.resume();
 
+        // Convert base64 to Int16 PCM
         const binary = atob(base64);
-        const len = binary.length;
-        const bytes = new Int16Array(len / 2);
-        const view = new DataView(
-            new Uint8Array([...binary].map(c => c.charCodeAt(0))).buffer
-        );
+        const bytes = new Int16Array(binary.length / 2);
+        const dataView = new DataView(new ArrayBuffer(binary.length));
+        
+        for (let i = 0; i < binary.length; i++) {
+            dataView.setUint8(i, binary.charCodeAt(i));
+        }
 
         for (let i = 0; i < bytes.length; i++) {
-            bytes[i] = view.getInt16(i * 2, true);
+            // Assuming Little Endian as per standard PCM streams
+            bytes[i] = dataView.getInt16(i * 2, true);
         }
 
+        // Convert Int16 to Float32 for Web Audio API
         const floats = new Float32Array(bytes.length);
         for (let i = 0; i < bytes.length; i++) {
             floats[i] = bytes[i] / 32768;
@@ -222,24 +193,19 @@ async function playRawPCM(base64) {
         source.start(nextStartTime);
         nextStartTime += buffer.duration;
 
-        setStatus("PLAYING AUDIO", "speaking", "🎤");
+        setStatus("AGENT SPEAKING", "speaking", "🎤");
 
         source.onended = () => {
             if (audioCtx.currentTime >= nextStartTime - 0.1) {
-                setStatus("CONNECTED", "connected", "✓");
+                setStatus("LISTENING", "connected", "✓");
             }
         };
-
     } catch (err) {
-        log(`❌ Audio error: ${err.message}`);
+        console.error(err);
     }
 }
 
-/* ===================== START ===================== */
-window.onload = async () => {
-    log("🧠 window.onload fired");
-    await init();
-};
+window.onload = init;
 </script>
 
 </body>
