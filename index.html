@@ -1,213 +1,97 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>Recall.ai + ElLo Agent</title>
+    <meta charset="UTF-8" />
+    <title>Recall Bot - Multi-Threaded Audio</title>
     <style>
-        body {
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-            align-items: center;
-            height: 100vh;
-            margin: 0;
-            background: linear-gradient(135deg, #0c0cf8 0%, #0b0beb 100%);
-            font-family: 'Segoe UI', sans-serif;
-            color: white;
-        }
-        .status-indicator {
-            width: 120px;
-            height: 120px;
-            border-radius: 50%;
-            background-color: #82baf7;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            margin-bottom: 10px;
-            transition: all 0.4s ease;
-        }
-        .speaking { background-color: #00d2ff; box-shadow: 0 0 30px #00d2ff; }
-        .connected { background-color: #00ff88; }
-        .error { background-color: #ff4d4d; }
-        .icon { font-size: 50px; }
-        #statusText { font-size: 18px; margin-bottom: 10px; }
-        #logBox {
-            width: 90%;
-            max-width: 800px;
-            height: 260px;
-            background: rgba(0,0,0,0.35);
-            border-radius: 6px;
-            padding: 10px;
-            font-size: 12px;
-            overflow-y: auto;
-            text-align: left;
-        }
+        body { display: flex; flex-direction: column; justify-content: center; align-items: center; height: 100vh; margin: 0; background: #00001a; color: white; font-family: 'Segoe UI', sans-serif; overflow: hidden; }
+        .status-indicator { width: 120px; height: 120px; border-radius: 50%; background-color: #111; border: 4px solid #333; transition: 0.1s ease; }
+        .speaking { background-color: #00d2ff; box-shadow: 0 0 40px #00d2ff; border-color: #fff; }
+        #statusText { margin-top: 20px; font-weight: bold; letter-spacing: 2px; color: #82baf7; }
+        #log { margin-top: 20px; font-size: 11px; width: 85%; height: 100px; overflow-y: auto; background: rgba(0,0,0,0.6); padding: 10px; border-radius: 8px; font-family: 'Courier New', monospace; color: #00ff00; }
     </style>
 </head>
 <body>
+    <div class="status-indicator" id="statusIndicator"></div>
+    <div id="statusText">SYSTEM STANDBY</div>
+    <div id="log"></div>
 
-<div class="status-indicator" id="statusIndicator">
-    <div class="icon">●</div>
-</div>
-<div id="statusText">INITIALIZING…</div>
-<div id="logBox"></div>
+<script type="module">
+    import { AudioAnalysis } from './audio_analysis.js';
 
-<script>
-/* ===================== CONFIG ===================== */
-// const WS_URL = "wss://connect-dev.getello.ai/ws-ello";
-const WS_URL = "wss://anyone-gordon-expansys-generations.trycloudflare.com/ws/rt";
-const CONVERSATION_ID = "696a0d00269b9417e249745e"; // Put your ID here
-const SAMPLE_RATE = 16000;
+    const SSE_URL = "https://tel-retreat-pure-education.trycloudflare.com/listen_audio"; 
+    const SAMPLE_RATE = 16000;
 
-/* ===================== STATE ===================== */
-let audioCtx;
-let nextStartTime = 0;
-let socket;
-let audioPackets = 0;
+    let audioCtx, streamNode, analyser, decoderWorker;
 
-/* ===================== UI HELPERS ===================== */
-const statusIndicator = document.getElementById("statusIndicator");
-const statusText = document.getElementById("statusText");
-const logBox = document.getElementById("logBox");
-
-function log(msg) {
-    const line = `[${new Date().toLocaleTimeString()}] ${msg}`;
-    logBox.innerHTML += line + "<br>";
-    logBox.scrollTop = logBox.scrollHeight;
-}
-
-function setStatus(text, cls, icon = "●") {
-    statusText.textContent = text;
-    statusIndicator.className = `status-indicator ${cls || ""}`;
-    statusIndicator.innerHTML = `<div class="icon">${icon}</div>`;
-}
-
-/* ===================== INIT ===================== */
-async function init() {
-    log("🚀 Initializing Audio...");
-    try {
-        audioCtx = new (window.AudioContext || window.webkitAudioContext)({
-            sampleRate: SAMPLE_RATE
-        });
-
-        if (audioCtx.state === "suspended") {
-            await audioCtx.resume();
-        }
-
-        connectWebSocket();
-    } catch (err) {
-        log(`❌ Init error: ${err.message}`);
-        setStatus("INIT FAILED", "error", "✗");
+    function log(msg) {
+        const el = document.getElementById("log");
+        el.innerHTML += `<div>[${new Date().toLocaleTimeString()}] ${msg}</div>`;
+        el.scrollTop = el.scrollHeight;
     }
-}
 
-/* ===================== WEBSOCKET ===================== */
-function connectWebSocket() {
-    log(`🔌 Connecting to ElLo WS...`);
-    setStatus("CONNECTING…", "", "●");
-
-    socket = new WebSocket(WS_URL);
-
-    socket.onopen = () => {
-        log("✅ WebSocket OPEN");
-        setStatus("CONNECTED", "connected", "✓");
-
-        // Logic from your Python 'sender': Send session start immediately
-        // const startSessionMsg = {
-        //     "type": "voice-session-start",
-        //     "conversation_id": CONVERSATION_ID
-        // };
-        // socket.send(JSON.stringify(startSessionMsg));
-        // log(`📤 Sent voice-session-start for ID: ${CONVERSATION_ID}`);
-    };
-
-    socket.onmessage = async (event) => {
-        let msg;
+    async function initAudio() {
+        if (audioCtx) return;
         try {
-            msg = JSON.parse(event.data);
+            
+            // 1. Audio Context with latency priority
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)({ 
+                sampleRate: SAMPLE_RATE,
+                latencyHint: 'playback' 
+            });
+
+            // 2. Load the Worklet (Thread 2)
+            await audioCtx.audioWorklet.addModule('stream_processor.js');
+            streamNode = new AudioWorkletNode(audioCtx, 'stream_processor');
+            
+            analyser = audioCtx.createAnalyser();
+            analyser.fftSize = 512; // Fast visualizer, minimal CPU impact
+            
+            streamNode.connect(analyser);
+            analyser.connect(audioCtx.destination);
+            await audioCtx.resume();
+
+            // 3. Load the Decoder Worker (Thread 3)
+            decoderWorker = new Worker('decoder_worker.js');
+            
+            decoderWorker.onmessage = (e) => {
+                if (e.data.type === 'data') {
+                    const floatBuffer = new Float32Array(e.data.buffer);
+                    streamNode.port.postMessage({ event: 'write', buffer: floatBuffer });
+                } else if (e.data.type === 'log') {
+                    log(e.data.msg);
+                }
+            };
+
+            // 4. Connect the Background Worker to the Network
+            decoderWorker.postMessage({ command: 'connect', url: SSE_URL });
+
+            document.getElementById("statusText").textContent = "STREAM ACTIVE";
+            log("✅ System ready. Audio isolated on background threads.");
+            startVisualizer();
         } catch (e) {
-            return;
+            log("❌ Init Error: " + e.message);
         }
-
-        // Logic from your Python 'receiver':
-        // Specifically check for "voice-audio-output"
-        if (msg.event === "audio_mixed_raw.data") {
-            audioPackets++;
-            const base64Audio = msg.data?.data?.buffer; // ElLo sends audio in the 'audio' field
-
-            if (base64Audio) {
-                if (audioPackets % 10 === 0) log(`🎵 Received audio packet #${audioPackets}`);
-                await playRawPCM(base64Audio);
-            }
-        } else {
-            // Log other messages like metadata/transcripts
-            log(`ℹ️ Received: ${msg.event || "unknown event"}`);
-        }
-    };
-
-    socket.onerror = (err) => {
-        log("❌ WebSocket ERROR");
-        setStatus("WS ERROR", "error", "✗");
-    };
-
-    socket.onclose = (e) => {
-        log(`🔌 WS CLOSED (code=${e.code}). Reconnecting in 3s...`);
-        setStatus("DISCONNECTED", "error", "✗");
-        setTimeout(connectWebSocket, 3000);
-    };
-}
-
-/* ===================== AUDIO PLAYBACK ===================== */
-async function playRawPCM(base64) {
-    try {
-        if (audioCtx.state === "suspended") await audioCtx.resume();
-
-        // Convert base64 to Int16 PCM
-        const binary = atob(base64);
-        const bytes = new Int16Array(binary.length / 2);
-        const dataView = new DataView(new ArrayBuffer(binary.length));
-        
-        for (let i = 0; i < binary.length; i++) {
-            dataView.setUint8(i, binary.charCodeAt(i));
-        }
-
-        for (let i = 0; i < bytes.length; i++) {
-            // Assuming Little Endian as per standard PCM streams
-            bytes[i] = dataView.getInt16(i * 2, true);
-        }
-
-        // Convert Int16 to Float32 for Web Audio API
-        const floats = new Float32Array(bytes.length);
-        for (let i = 0; i < bytes.length; i++) {
-            floats[i] = bytes[i] / 32768;
-        }
-
-        const buffer = audioCtx.createBuffer(1, floats.length, SAMPLE_RATE);
-        buffer.getChannelData(0).set(floats);
-
-        const source = audioCtx.createBufferSource();
-        source.buffer = buffer;
-        source.connect(audioCtx.destination);
-
-        const now = audioCtx.currentTime;
-        if (nextStartTime < now) nextStartTime = now;
-
-        source.start(nextStartTime);
-        nextStartTime += buffer.duration;
-
-        setStatus("AGENT SPEAKING", "speaking", "🎤");
-
-        source.onended = () => {
-            if (audioCtx.currentTime >= nextStartTime - 0.1) {
-                setStatus("LISTENING", "connected", "✓");
-            }
-        };
-    } catch (err) {
-        console.error(err);
     }
-}
 
-window.onload = init;
+    function startVisualizer() {
+        const indicator = document.getElementById("statusIndicator");
+        const update = () => {
+            requestAnimationFrame(update);
+            if (!analyser) return;
+            const data = AudioAnalysis.getFrequencies(analyser, SAMPLE_RATE, null, 'voice');
+            const vol = data.values.reduce((a, b) => a + b, 0) / data.values.length;
+            
+            if (vol > 0.04) indicator.classList.add("speaking");
+            else indicator.classList.remove("speaking");
+        };
+        update();
+    }
+
+    // Delay start by 1 second to let the Recall Bot browser stabilize
+    window.onload = () => {
+        initAudio();
+    };
 </script>
-
 </body>
 </html>
