@@ -130,7 +130,7 @@ let reconnectAttempts = 0;
 let isShuttingDown = false;
 
 // CONFIGURATION
-const BATCH_SIZE = 3;           // Number of packets to group together
+const BATCH_SIZE = 4;           // Number of packets to group together
 const FLUSH_INTERVAL = 100;       // Milliseconds to wait before forcing a process of partial batches
 const MAX_RECONNECT_ATTEMPTS = 5; // Maximum reconnection attempts before giving up
 const RECONNECT_DELAY = 2000;    // Base delay between reconnection attempts (ms)
