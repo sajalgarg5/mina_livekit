@@ -168,7 +168,7 @@ function connectWebSocket() {
                 await playRawPCM(base64Audio);
             }
         } else {
-            log(`ℹ️ Event: ${msg.event || "unknown"}`);
+            log(`ℹ️ Event: ${msg || "unknown"}`);
         }
     };
 
