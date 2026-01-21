@@ -152,6 +152,7 @@ function connectWebSocket() {
         let msg;
         try {
             msg = JSON.parse(event);
+            log(`📥 Received: ${JSON.stringify(msg)}`);
         } catch (e) {
             // Handle raw binary messages if applicable
             return;
