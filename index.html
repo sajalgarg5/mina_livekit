@@ -105,6 +105,7 @@
 
         socket.onmessage = async (event) => {
             try {
+                log("Received message:", event.data);
                 const msg = JSON.parse(event.data);
                 
                 // Match the event key from your packet structure
@@ -184,7 +185,7 @@
     window.onload = connect;
 
     // Browser policy: AudioContext must be resumed after a user gesture
-    document.body.addEventListener('click', initAudio, { once: true });
+    // document.body.addEventListener('click', initAudio, { once: true });
 </script>
 
 </body>
