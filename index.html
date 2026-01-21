@@ -151,7 +151,7 @@ function connectWebSocket() {
     socket.onmessage = async (event) => {
         let msg;
         try {
-            msg = JSON.parse(event.data);
+            msg = JSON.parse(event);
         } catch (e) {
             // Handle raw binary messages if applicable
             return;
