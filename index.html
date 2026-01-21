@@ -2,7 +2,8 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Mina Audio Receiver</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Recall.ai + ElLo Agent</title>
     <style>
         body {
             display: flex;
@@ -11,182 +12,230 @@
             align-items: center;
             height: 100vh;
             margin: 0;
-            background: linear-gradient(135deg, #0f0c29 0%, #302b63 50%, #24243e 100%);
+            background: linear-gradient(135deg, #01014e 0%, #03035a 100%);
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             color: white;
+            overflow: hidden;
         }
-        .status-container {
-            text-align: center;
-            padding: 40px;
-            background: rgba(255, 255, 255, 0.05);
-            border-radius: 20px;
-            backdrop-filter: blur(10px);
-            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
-            border: 1px border rgba(255, 255, 255, 0.18);
-        }
-        .indicator {
-            width: 100px;
-            height: 100px;
+
+        /* Status Indicator Animations */
+        .status-indicator {
+            width: 120px;
+            height: 120px;
             border-radius: 50%;
-            background: #444;
-            margin: 0 auto 20px;
+            background-color: #82baf7;
             display: flex;
             justify-content: center;
             align-items: center;
-            font-size: 40px;
-            transition: all 0.3s ease;
+            margin-bottom: 20px;
+            transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
         }
-        .connected { background: #00ff88; box-shadow: 0 0 20px #00ff88; }
-        .speaking { background: #00d2ff; box-shadow: 0 0 30px #00d2ff; transform: scale(1.1); }
-        .error { background: #ff4d4d; }
+
+        .speaking { 
+            background-color: #00d2ff; 
+            box-shadow: 0 0 40px #00d2ff;
+            transform: scale(1.1);
+        }
+
+        .connected { background-color: #00ff88; }
+        .error { background-color: #ff4d4d; }
         
-        #log {
-            margin-top: 20px;
-            width: 400px;
-            height: 150px;
-            background: rgba(0,0,0,0.5);
-            padding: 10px;
-            font-family: monospace;
-            font-size: 12px;
-            overflow-y: auto;
+        .icon { font-size: 50px; }
+        #statusText { font-size: 20px; font-weight: bold; margin-bottom: 15px; letter-spacing: 1px; }
+
+        /* Logging Box Styling */
+        #logBox {
+            width: 90%;
+            max-width: 800px;
+            height: 260px;
+            background: rgba(0, 0, 0, 0.4);
+            border: 1px solid rgba(255, 255, 255, 0.1);
             border-radius: 8px;
+            padding: 15px;
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 13px;
+            overflow-y: auto;
             text-align: left;
+            backdrop-filter: blur(5px);
         }
+
+        .log-entry { margin-bottom: 4px; border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 2px; }
+        .timestamp { color: #82baf7; margin-right: 8px; }
     </style>
 </head>
 <body>
 
-<div class="status-container">
-    <div id="indicator" class="indicator">●</div>
-    <h2 id="status">INITIALIZING...</h2>
-    <p>Waiting for WebSocket audio packets...</p>
-    <div id="log"></div>
-</div>
+    <div class="status-indicator" id="statusIndicator">
+        <div class="icon">●</div>
+    </div>
+    
+    <div id="statusText">INITIALIZING…</div>
+    
+    <div id="logBox"></div>
 
 <script>
-    /* --- CONFIGURATION --- */
-    const WS_URL = "wss://connect-dev.getello.ai/ws-ello";
-    const SAMPLE_RATE = 16000; // Linear16 16kHz
+/* ===================== CONFIG ===================== */
+const WS_URL = "wss://connect-dev.getello.ai/ws-ello";
+// const CONVERSATION_ID = "696a0d00269b9417e249745e";
+const SAMPLE_RATE = 16000;
 
-    /* --- AUDIO STATE --- */
-    let audioCtx = null;
-    let nextStartTime = 0;
-    let socket = null;
+/* ===================== STATE ===================== */
+let audioCtx;
+let nextStartTime = 0;
+let socket;
+let audioPackets = 0;
 
-    const indicator = document.getElementById('indicator');
-    const statusText = document.getElementById('status');
-    const logBox = document.getElementById('log');
+/* ===================== UI HELPERS ===================== */
+const statusIndicator = document.getElementById("statusIndicator");
+const statusText = document.getElementById("statusText");
+const logBox = document.getElementById("logBox");
 
-    function log(msg) {
-        const entry = document.createElement('div');
-        entry.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
-        logBox.appendChild(entry);
-        logBox.scrollTop = logBox.scrollHeight;
-    }
+function log(msg) {
+    const time = new Date().toLocaleTimeString([], { hour12: false });
+    const entry = document.createElement("div");
+    entry.className = "log-entry";
+    entry.innerHTML = `<span class="timestamp">[${time}]</span>${msg}`;
+    logBox.appendChild(entry);
+    logBox.scrollTop = logBox.scrollHeight;
+}
 
-    async function initAudio() {
-        if (!audioCtx) {
-            audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
-        }
-        if (audioCtx.state === 'suspended') {
+function setStatus(text, cls, icon = "●") {
+    statusText.textContent = text.toUpperCase();
+    statusIndicator.className = `status-indicator ${cls || ""}`;
+    statusIndicator.innerHTML = `<div class="icon">${icon}</div>`;
+}
+
+/* ===================== INITIALIZATION ===================== */
+async function init() {
+    log("🚀 Initializing Audio System...");
+    try {
+        // Standardize AudioContext across browsers
+        const AudioContext = window.AudioContext || window.webkitAudioContext;
+        audioCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
+
+        // Required for modern browsers to allow audio playback
+        if (audioCtx.state === "suspended") {
+            log("⏳ Resuming AudioContext...");
             await audioCtx.resume();
         }
+
+        connectWebSocket();
+    } catch (err) {
+        log(`❌ Init error: ${err.message}`);
+        setStatus("INIT FAILED", "error", "✗");
     }
+}
 
-    function connect() {
-        log("Connecting to WebSocket...");
-        socket = new WebSocket(WS_URL);
+/* ===================== WEBSOCKET LOGIC ===================== */
+function connectWebSocket() {
+    log(`🔌 Connecting to ElLo Server...`);
+    setStatus("CONNECTING…", "", "●");
 
-        socket.onopen = () => {
-            log("Connected to server");
-            statusText.textContent = "CONNECTED / LISTENING";
-            indicator.className = "indicator connected";
+    socket = new WebSocket(WS_URL);
+
+    socket.onopen = () => {
+        log("✅ WebSocket Connection Established");
+        setStatus("CONNECTED", "connected", "✓");
+
+        // Uncomment and modify if the server requires a handshake
+        /*
+        const startSessionMsg = {
+            "type": "voice-session-start",
+            "conversation_id": CONVERSATION_ID
         };
+        socket.send(JSON.stringify(startSessionMsg));
+        log(`📤 Sent session start for ID: ${CONVERSATION_ID}`);
+        */
+    };
 
-        socket.onmessage = async (event) => {
-            try {
-                log("Received message:", event.data);
-                const msg = JSON.parse(event.data);
-                
-                // Match the event key from your packet structure
-                if (msg.type === "voice-audio-output") {
-                    const base64Buffer = msg.audio;
-                    if (base64Buffer) {
-                        await playBase64PCM(base64Buffer);
-                    }
-                }
-            } catch (e) {
-                // Ignore non-JSON or malformed packets
+    socket.onmessage = async (event) => {
+        let msg;
+        try {
+            msg = JSON.parse(event.data);
+        } catch (e) {
+            // Handle raw binary messages if applicable
+            return;
+        }
+
+        // Logic for handling raw audio buffers
+        if (msg.type === "voice-audio-output") {
+            const base64Audio = msg.audio; 
+
+            if (base64Audio) {
+                audioPackets++;
+                if (audioPackets % 10 === 0) log(`🎵 Processing audio packet #${audioPackets}`);
+                await playRawPCM(base64Audio);
             }
-        };
+        } else {
+            log(`ℹ️ Event: ${msg.event || "unknown"}`);
+        }
+    };
 
-        socket.onclose = () => {
-            log("WebSocket closed. Retrying...");
-            indicator.className = "indicator error";
-            statusText.textContent = "DISCONNECTED";
-            setTimeout(connect, 3000);
-        };
+    socket.onerror = (err) => {
+        log("❌ WebSocket Error detected");
+        setStatus("WS ERROR", "error", "✗");
+    };
 
-        socket.onerror = (err) => {
-            log("WebSocket Error");
-            console.error(err);
-        };
-    }
+    socket.onclose = (e) => {
+        log(`🔌 WS CLOSED (code=${e.code}). Reconnecting in 3s...`);
+        setStatus("DISCONNECTED", "error", "✗");
+        setTimeout(connectWebSocket, 3000);
+    };
+}
 
-    async function playBase64PCM(base64) {
-        await initAudio();
+/* ===================== AUDIO PLAYBACK (PCM L16) ===================== */
+async function playRawPCM(base64) {
+    try {
+        if (audioCtx.state === "suspended") await audioCtx.resume();
 
-        // 1. Decode Base64 to binary
+        // 1. Convert base64 string to binary data
         const binaryString = atob(base64);
         const len = binaryString.length;
-        const bytes = new Int16Array(len / 2);
+        const bytes = new Uint8Array(len);
+        for (let i = 0; i < len; i++) {
+            bytes[i] = binaryString.charCodeAt(i);
+        }
+
+        // 2. Convert to Int16 array (assuming 16-bit PCM)
+        const int16Buffer = new Int16Array(bytes.buffer);
         
-        // 2. Convert to Int16 samples (assuming Little Endian)
-        for (let i = 0; i < len; i += 2) {
-            const low = binaryString.charCodeAt(i);
-            const high = binaryString.charCodeAt(i + 1);
-            bytes[i / 2] = (high << 8) | low;
+        // 3. Normalize Int16 to Float32 (-1.0 to 1.0)
+        const float32Data = new Float32Array(int16Buffer.length);
+        for (let i = 0; i < int16Buffer.length; i++) {
+            float32Data[i] = int16Buffer[i] / 32768.0;
         }
 
-        // 3. Convert Int16 to Float32 [-1.0, 1.0]
-        const floats = new Float32Array(bytes.length);
-        for (let i = 0; i < bytes.length; i++) {
-            floats[i] = bytes[i] / 32768;
-        }
-
-        // 4. Create AudioBuffer and schedule playback
-        const audioBuffer = audioCtx.createBuffer(1, floats.length, SAMPLE_RATE);
-        audioBuffer.getChannelData(0).set(floats);
+        // 4. Create and schedule the audio buffer
+        const audioBuffer = audioCtx.createBuffer(1, float32Data.length, SAMPLE_RATE);
+        audioBuffer.getChannelData(0).set(float32Data);
 
         const source = audioCtx.createBufferSource();
         source.buffer = audioBuffer;
         source.connect(audioCtx.destination);
 
-        // Visual Feedback
-        indicator.className = "indicator speaking";
-        source.onended = () => {
-            // Only revert if we aren't currently playing something else
-            if (audioCtx.currentTime >= nextStartTime - 0.05) {
-                indicator.className = "indicator connected";
-            }
-        };
-
-        // Precise Scheduling (Gapless Playback)
-        const currentTime = audioCtx.currentTime;
-        if (nextStartTime < currentTime) {
-            nextStartTime = currentTime + 0.01; // Small buffer for safety
-        }
+        // Precise scheduling for gapless playback
+        const now = audioCtx.currentTime;
+        if (nextStartTime < now) nextStartTime = now;
 
         source.start(nextStartTime);
         nextStartTime += audioBuffer.duration;
+
+        setStatus("AGENT SPEAKING", "speaking", "🎤");
+
+        source.onended = () => {
+            // Only revert status if we've finished the whole queue
+            if (audioCtx.currentTime >= nextStartTime - 0.05) {
+                setStatus("LISTENING", "connected", "✓");
+            }
+        };
+    } catch (err) {
+        console.error("Audio Playback Error:", err);
+        log(`⚠️ Playback error: ${err.message}`);
     }
+}
 
-    // Start on load
-    window.onload = connect;
-
-    // Browser policy: AudioContext must be resumed after a user gesture
-    // document.body.addEventListener('click', initAudio, { once: true });
+// Start the application
+window.onload = init;
 </script>
-
 </body>
 </html>
