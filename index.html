@@ -2,227 +2,96 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8" />
-    <title>Recall.ai Real-time Audio Agent</title>
-
+    <title>Recall Bot - Multi-Threaded Audio</title>
     <style>
-        body {
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-            align-items: center;
-            height: 100vh;
-            margin: 0;
-            background: #0c0cf8;
-            font-family: sans-serif;
-            color: white;
-        }
-
-        .status-indicator {
-            width: 150px;
-            height: 150px;
-            border-radius: 50%;
-            background-color: #82baf7;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            margin-bottom: 20px;
-            transition: 0.3s;
-        }
-
-        .speaking {
-            background-color: #00d2ff;
-            box-shadow: 0 0 50px #00d2ff;
-            transform: scale(1.1);
-        }
-
-        .icon {
-            font-size: 60px;
-        }
-
-        #statusText {
-            font-size: 18px;
-            font-weight: bold;
-            text-transform: uppercase;
-        }
-
-        #log {
-            margin-top: 20px;
-            font-size: 12px;
-            max-width: 80%;
-            height: 120px;
-            overflow-y: auto;
-            background: rgba(0,0,0,0.2);
-            padding: 10px;
-            border-radius: 6px;
-        }
+        body { display: flex; flex-direction: column; justify-content: center; align-items: center; height: 100vh; margin: 0; background: #00001a; color: white; font-family: 'Segoe UI', sans-serif; overflow: hidden; }
+        .status-indicator { width: 120px; height: 120px; border-radius: 50%; background-color: #111; border: 4px solid #333; transition: 0.1s ease; }
+        .speaking { background-color: #00d2ff; box-shadow: 0 0 40px #00d2ff; border-color: #fff; }
+        #statusText { margin-top: 20px; font-weight: bold; letter-spacing: 2px; color: #82baf7; }
+        #log { margin-top: 20px; font-size: 11px; width: 85%; height: 100px; overflow-y: auto; background: rgba(0,0,0,0.6); padding: 10px; border-radius: 8px; font-family: 'Courier New', monospace; color: #00ff00; }
     </style>
 </head>
-
 <body>
-
-    <div class="status-indicator" id="statusIndicator">
-        <div class="icon">●</div>
-    </div>
-
-    <div id="statusText">Connecting…</div>
-
+    <div class="status-indicator" id="statusIndicator"></div>
+    <div id="statusText">SYSTEM STANDBY</div>
     <div id="log"></div>
 
-<script>
-/* ------------------------------------------------------------------
-   CONFIG
-------------------------------------------------------------------- */
-const BASE_URL = "https://cabinet-event-tricks-alarm.trycloudflare.com";
-const SAMPLE_RATE = 16000;
+<script type="module">
+    import { AudioAnalysis } from './audio_analysis.js';
 
-/* ------------------------------------------------------------------
-   STATE
-------------------------------------------------------------------- */
-let audioCtx = null;
-let nextStartTime = 0;
-let eventSource = null;
-let connected = false;
+    const SSE_URL = " https://cabinet-event-tricks-alarm.trycloudflare.com/listen_audio"; 
+    const SAMPLE_RATE = 16000;
 
-/* ------------------------------------------------------------------
-   LOGGING
-------------------------------------------------------------------- */
-function log(msg) {
-    const el = document.getElementById("log");
-    const time = new Date().toLocaleTimeString();
-    el.innerHTML += `[${time}] ${msg}<br>`;
-    el.scrollTop = el.scrollHeight;
-    console.log(msg);
-}
+    let audioCtx, streamNode, analyser, decoderWorker;
 
-/* ------------------------------------------------------------------
-   AUDIO INIT
-------------------------------------------------------------------- */
-function ensureAudioContext() {
-    if (!audioCtx) {
-        audioCtx = new (window.AudioContext || window.webkitAudioContext)({
-            sampleRate: SAMPLE_RATE
-        });
-        log("🎧 AudioContext created");
+    function log(msg) {
+        const el = document.getElementById("log");
+        el.innerHTML += `<div>[${new Date().toLocaleTimeString()}] ${msg}</div>`;
+        el.scrollTop = el.scrollHeight;
     }
 
-    if (audioCtx.state === "suspended") {
-        audioCtx.resume().then(() => {
-            log("▶️ AudioContext resumed");
-        });
+    async function initAudio() {
+        if (audioCtx) return;
+        try {
+            
+            // 1. Audio Context with latency priority
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)({ 
+                sampleRate: SAMPLE_RATE,
+                latencyHint: 'playback' 
+            });
+
+            // 2. Load the Worklet (Thread 2)
+            await audioCtx.audioWorklet.addModule('stream_processor.js');
+            streamNode = new AudioWorkletNode(audioCtx, 'stream_processor');
+            
+            analyser = audioCtx.createAnalyser();
+            analyser.fftSize = 512; // Fast visualizer, minimal CPU impact
+            
+            streamNode.connect(analyser);
+            analyser.connect(audioCtx.destination);
+            await audioCtx.resume();
+
+            // 3. Load the Decoder Worker (Thread 3)
+            decoderWorker = new Worker('decoder_worker.js');
+            
+            decoderWorker.onmessage = (e) => {
+                if (e.data.type === 'data') {
+                    const floatBuffer = new Float32Array(e.data.buffer);
+                    streamNode.port.postMessage({ event: 'write', buffer: floatBuffer });
+                } else if (e.data.type === 'log') {
+                    log(e.data.msg);
+                }
+            };
+
+            // 4. Connect the Background Worker to the Network
+            decoderWorker.postMessage({ command: 'connect', url: SSE_URL });
+
+            document.getElementById("statusText").textContent = "STREAM ACTIVE";
+            log("✅ System ready. Audio isolated on background threads.");
+            startVisualizer();
+        } catch (e) {
+            log("❌ Init Error: " + e.message);
+        }
     }
-}
 
-/* ------------------------------------------------------------------
-   AUDIO PLAYBACK
-------------------------------------------------------------------- */
-function playPCMChunk(base64) {
-    try {
-        ensureAudioContext();
-
-        const binary = atob(base64);
-        const buffer = new ArrayBuffer(binary.length);
-        const view = new Uint8Array(buffer);
-
-        for (let i = 0; i < binary.length; i++) {
-            view[i] = binary.charCodeAt(i);
-        }
-
-        const int16 = new Int16Array(buffer);
-        const float32 = new Float32Array(int16.length);
-
-        for (let i = 0; i < int16.length; i++) {
-            float32[i] = int16[i] / 32768;
-        }
-
-        const audioBuffer = audioCtx.createBuffer(
-            1,
-            float32.length,
-            SAMPLE_RATE
-        );
-        audioBuffer.getChannelData(0).set(float32);
-
-        const source = audioCtx.createBufferSource();
-        source.buffer = audioBuffer;
-        source.connect(audioCtx.destination);
-
-        const now = audioCtx.currentTime;
-        if (nextStartTime < now) {
-            nextStartTime = now;
-        }
-
-        source.start(nextStartTime);
-        nextStartTime += audioBuffer.duration;
-
+    function startVisualizer() {
         const indicator = document.getElementById("statusIndicator");
-        indicator.classList.add("speaking");
-
-        source.onended = () => {
-            if (audioCtx.currentTime >= nextStartTime - 0.05) {
-                indicator.classList.remove("speaking");
-            }
+        const update = () => {
+            requestAnimationFrame(update);
+            if (!analyser) return;
+            const data = AudioAnalysis.getFrequencies(analyser, SAMPLE_RATE, null, 'voice');
+            const vol = data.values.reduce((a, b) => a + b, 0) / data.values.length;
+            
+            if (vol > 0.04) indicator.classList.add("speaking");
+            else indicator.classList.remove("speaking");
         };
-    } catch (err) {
-        log("❌ Audio decode error");
-    }
-}
-
-/* ------------------------------------------------------------------
-   SSE CONNECTION
-------------------------------------------------------------------- */
-function connectSSE() {
-    if (eventSource) {
-        eventSource.close();
+        update();
     }
 
-    log("🔌 Connecting to SSE…");
-    document.getElementById("statusText").textContent = "Connecting…";
-
-    eventSource = new EventSource(`${BASE_URL}/listen_audio`);
-
-    eventSource.onopen = () => {
-        connected = true;
-        log("✅ SSE connected");
-        document.getElementById("statusText").textContent = "Live Streaming";
+    // Delay start by 1 second to let the Recall Bot browser stabilize
+    window.onload = () => {
+        initAudio();
     };
-
-    eventSource.addEventListener("audio", (event) => {
-        playPCMChunk(event.data);
-    });
-
-    eventSource.addEventListener("ping", () => {
-        if (!connected) {
-            connected = true;
-            log("💓 Heartbeat received");
-        }
-    });
-
-    eventSource.onerror = () => {
-        if (connected) {
-            log("⚠️ SSE disconnected, retrying…");
-        }
-        connected = false;
-        document.getElementById("statusText").textContent = "Reconnecting…";
-
-        eventSource.close();
-        setTimeout(connectSSE, 3000);
-    };
-}
-
-/* ------------------------------------------------------------------
-   USER INTERACTION (IMPORTANT FOR BROWSERS)
-------------------------------------------------------------------- */
-window.addEventListener("click", () => {
-    ensureAudioContext();
-});
-
-/* ------------------------------------------------------------------
-   START
-------------------------------------------------------------------- */
-window.onload = () => {
-    log("🚀 Frontend loaded");
-    connectSSE();
-};
 </script>
-
 </body>
 </html>
