@@ -3,162 +3,226 @@
 <head>
     <meta charset="UTF-8" />
     <title>Recall.ai Real-time Audio Agent</title>
+
     <style>
-        body { display: flex; flex-direction: column; justify-content: center; align-items: center; height: 100vh; margin: 0; background: #0c0cf8; font-family: sans-serif; color: white; }
-        .status-indicator { width: 150px; height: 150px; border-radius: 50%; background-color: #82baf7; display: flex; justify-content: center; align-items: center; margin-bottom: 20px; transition: 0.3s; }
-        .speaking { background-color: #00d2ff; box-shadow: 0 0 50px #00d2ff; transform: scale(1.1); }
-        .icon { font-size: 60px; }
-        #statusText { font-size: 18px; font-weight: bold; text-transform: uppercase; }
-        #log { margin-top: 20px; font-size: 12px; width: 80%; height: 120px; overflow-y: auto; background: rgba(0,0,0,0.2); padding: 10px; border-radius: 6px; }
+        body {
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            background: #0c0cf8;
+            font-family: sans-serif;
+            color: white;
+        }
+
+        .status-indicator {
+            width: 150px;
+            height: 150px;
+            border-radius: 50%;
+            background-color: #82baf7;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            margin-bottom: 20px;
+            transition: 0.3s;
+        }
+
+        .speaking {
+            background-color: #00d2ff;
+            box-shadow: 0 0 50px #00d2ff;
+            transform: scale(1.1);
+        }
+
+        .icon {
+            font-size: 60px;
+        }
+
+        #statusText {
+            font-size: 18px;
+            font-weight: bold;
+            text-transform: uppercase;
+        }
+
+        #log {
+            margin-top: 20px;
+            font-size: 12px;
+            max-width: 80%;
+            height: 120px;
+            overflow-y: auto;
+            background: rgba(0,0,0,0.2);
+            padding: 10px;
+            border-radius: 6px;
+        }
     </style>
 </head>
+
 <body>
-    <div class="status-indicator" id="statusIndicator"><div class="icon">●</div></div>
+
+    <div class="status-indicator" id="statusIndicator">
+        <div class="icon">●</div>
+    </div>
+
     <div id="statusText">Connecting…</div>
+
     <div id="log"></div>
 
 <script>
+/* ------------------------------------------------------------------
+   CONFIG
+------------------------------------------------------------------- */
 const BASE_URL = "https://cabinet-event-tricks-alarm.trycloudflare.com";
 const SAMPLE_RATE = 16000;
-const MIN_BUFFER_SIZE = 128; 
 
-let audioContextPlayback = null;
-let audioBuffer = new Uint8Array(0);
-let isPlayingAudio = false;
-window.audioInterrupted = false;
+/* ------------------------------------------------------------------
+   STATE
+------------------------------------------------------------------- */
+let audioCtx = null;
+let nextStartTime = 0;
+let eventSource = null;
+let connected = false;
 
+/* ------------------------------------------------------------------
+   LOGGING
+------------------------------------------------------------------- */
 function log(msg) {
     const el = document.getElementById("log");
-    el.innerHTML += `[${new Date().toLocaleTimeString()}] ${msg}<br>`;
+    const time = new Date().toLocaleTimeString();
+    el.innerHTML += `[${time}] ${msg}<br>`;
     el.scrollTop = el.scrollHeight;
+    console.log(msg);
 }
 
-function queueAudioChunk(base64Audio) {
-    try {
-        const binaryString = atob(base64Audio);
-        const chunk = new Uint8Array(binaryString.length);
-        for (let i = 0; i < binaryString.length; i++) {
-            chunk[i] = binaryString.charCodeAt(i);
-        }
+/* ------------------------------------------------------------------
+   AUDIO INIT
+------------------------------------------------------------------- */
+function ensureAudioContext() {
+    if (!audioCtx) {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)({
+            sampleRate: SAMPLE_RATE
+        });
+        log("🎧 AudioContext created");
+    }
 
-        // Append to master buffer
-        const newBuffer = new Uint8Array(audioBuffer.length + chunk.length);
-        newBuffer.set(audioBuffer);
-        newBuffer.set(chunk, audioBuffer.length);
-        audioBuffer = newBuffer;
-
-        // Reference Logic: Play when buffer is large enough
-        if (audioBuffer.length >= MIN_BUFFER_SIZE && !isPlayingAudio && !window.audioInterrupted) {
-            playBufferedAudio();
-        }
-    } catch (error) {
-        console.error("Error queueing audio chunk:", error);
+    if (audioCtx.state === "suspended") {
+        audioCtx.resume().then(() => {
+            log("▶️ AudioContext resumed");
+        });
     }
 }
 
-async function playBufferedAudio() {
-    if (window.audioInterrupted) {
-        isPlayingAudio = false;
-        return;
-    }
-
-    if (audioBuffer.length === 0) {
-        isPlayingAudio = false;
-        return;
-    }
-
-    isPlayingAudio = true;
-    document.getElementById("statusIndicator").classList.add("speaking");
-
+/* ------------------------------------------------------------------
+   AUDIO PLAYBACK
+------------------------------------------------------------------- */
+function playPCMChunk(base64) {
     try {
-        if (!audioContextPlayback) {
-            audioContextPlayback = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
-        }
-        if (audioContextPlayback.state === "suspended") {
-            await audioContextPlayback.resume();
-        }
+        ensureAudioContext();
 
-        // --- FIXED BUFFER SLICING ---
-        // Instead of taking EVERYTHING, we take exactly MIN_BUFFER_SIZE
-        // This leaves the rest of the incoming data for the NEXT onended call
-        const chunkSize = Math.max(MIN_BUFFER_SIZE, audioBuffer.length);
-        const chunkToPlay = audioBuffer.slice(0, chunkSize);
-        audioBuffer = audioBuffer.slice(chunkSize);
+        const binary = atob(base64);
+        const buffer = new ArrayBuffer(binary.length);
+        const view = new Uint8Array(buffer);
 
-        const sampleCount = chunkToPlay.length / 2;
-        const audioBufferNode = audioContextPlayback.createBuffer(1, sampleCount, SAMPLE_RATE);
-        const channelData = audioBufferNode.getChannelData(0);
-        const dataView = new DataView(chunkToPlay.buffer);
-
-        for (let i = 0; i < sampleCount; i++) {
-            const sample = dataView.getInt16(i * 2, true);
-            channelData[i] = sample / 32768.0;
+        for (let i = 0; i < binary.length; i++) {
+            view[i] = binary.charCodeAt(i);
         }
 
-        const source = audioContextPlayback.createBufferSource();
-        window.currentAudioSource = source; 
-        source.buffer = audioBufferNode;
-        source.connect(audioContextPlayback.destination);
+        const int16 = new Int16Array(buffer);
+        const float32 = new Float32Array(int16.length);
 
-        // Reference Logic: use onended to trigger the next chunk
+        for (let i = 0; i < int16.length; i++) {
+            float32[i] = int16[i] / 32768;
+        }
+
+        const audioBuffer = audioCtx.createBuffer(
+            1,
+            float32.length,
+            SAMPLE_RATE
+        );
+        audioBuffer.getChannelData(0).set(float32);
+
+        const source = audioCtx.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(audioCtx.destination);
+
+        const now = audioCtx.currentTime;
+        if (nextStartTime < now) {
+            nextStartTime = now;
+        }
+
+        source.start(nextStartTime);
+        nextStartTime += audioBuffer.duration;
+
+        const indicator = document.getElementById("statusIndicator");
+        indicator.classList.add("speaking");
+
         source.onended = () => {
-            if (window.audioInterrupted) {
-                isPlayingAudio = false;
-                document.getElementById("statusIndicator").classList.remove("speaking");
-                return;
-            }
-
-            if (audioBuffer.length >= MIN_BUFFER_SIZE) {
-                playBufferedAudio();
-            } else {
-                isPlayingAudio = false;
-                document.getElementById("statusIndicator").classList.remove("speaking");
-                
-                // Reference Logic: Check again after 10ms
-                window.audioPlaybackTimeout = setTimeout(() => {
-                    if (!window.audioInterrupted && audioBuffer.length >= MIN_BUFFER_SIZE) {
-                        playBufferedAudio();
-                    }
-                }, 10);
+            if (audioCtx.currentTime >= nextStartTime - 0.05) {
+                indicator.classList.remove("speaking");
             }
         };
-
-        const currentTime = audioContextPlayback.currentTime;
-        source.start(currentTime);
-
-    } catch (error) {
-        console.error("Error playing audio:", error);
-        isPlayingAudio = false;
+    } catch (err) {
+        log("❌ Audio decode error");
     }
 }
 
+/* ------------------------------------------------------------------
+   SSE CONNECTION
+------------------------------------------------------------------- */
 function connectSSE() {
-    log("🔌 Connecting...");
+    if (eventSource) {
+        eventSource.close();
+    }
+
+    log("🔌 Connecting to SSE…");
     document.getElementById("statusText").textContent = "Connecting…";
-    const eventSource = new EventSource(`${BASE_URL}/listen_audio`);
+
+    eventSource = new EventSource(`${BASE_URL}/listen_audio`);
 
     eventSource.onopen = () => {
-        log("✅ Connected");
+        connected = true;
+        log("✅ SSE connected");
         document.getElementById("statusText").textContent = "Live Streaming";
     };
 
     eventSource.addEventListener("audio", (event) => {
-        queueAudioChunk(event.data);
+        playPCMChunk(event.data);
+    });
+
+    eventSource.addEventListener("ping", () => {
+        if (!connected) {
+            connected = true;
+            log("💓 Heartbeat received");
+        }
     });
 
     eventSource.onerror = () => {
+        if (connected) {
+            log("⚠️ SSE disconnected, retrying…");
+        }
+        connected = false;
+        document.getElementById("statusText").textContent = "Reconnecting…";
+
         eventSource.close();
         setTimeout(connectSSE, 3000);
     };
 }
 
+/* ------------------------------------------------------------------
+   USER INTERACTION (IMPORTANT FOR BROWSERS)
+------------------------------------------------------------------- */
 window.addEventListener("click", () => {
-    if (audioContextPlayback && audioContextPlayback.state === "suspended") {
-        audioContextPlayback.resume();
-    }
+    ensureAudioContext();
 });
 
-window.onload = connectSSE;
+/* ------------------------------------------------------------------
+   START
+------------------------------------------------------------------- */
+window.onload = () => {
+    log("🚀 Frontend loaded");
+    connectSSE();
+};
 </script>
+
 </body>
 </html>
